@@ -6,7 +6,7 @@ import numpy.typing as npt
 
 try:
     import cupy.typing as cpt
-except:
+except ModuleNotFoundError:
     import numpy.typing as cpt
 
 

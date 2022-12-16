@@ -6,7 +6,7 @@ import pynufft
 
 try:
     import cupy.typing as cpt
-except:
+except ModuleNotFoundError:
     import numpy.typing as cpt
 
 from .linearoperators import LinearOperator
