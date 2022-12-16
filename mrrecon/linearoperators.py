@@ -17,8 +17,11 @@ class LinearOperator(abc.ABC):
                  output_shape: tuple[int, ...],
                  xp: types.ModuleType = np,
                  input_dtype: type = float,
-                 output_dtype: type = float) -> None:
+                 output_dtype: type = float,
+                 pre_scale: float | npt.NDArray | cpt.NDArray = 1,
+                 post_scale: float | npt.NDArray | cpt.NDArray = 1) -> None:
         """Linear operator abstract base class that maps real or complex array x to y
+            diag(post_scale) A (diag(pre_scale) x)
 
         Parameters
         ----------
@@ -29,12 +32,16 @@ class LinearOperator(abc.ABC):
         xp : types.ModuleType | None
             module indicating whether to store all LOR endpoints as numpy as cupy array
             by default numpy
-        input_dtype: type | None
+        input_dtype: type
             data type of the input array
             by default float
-        output_dtype: type | None
+        output_dtype: type
             data type of the input array
             by default float
+        pre_scale : float | npt.NDArray | cpt.NDArray
+            scalar / pointwise scaling before applying the operator
+        post_scale : float | npt.NDArray | cpt.NDArray
+            scalar / pointwise scaling after applying the operator
         """
 
         self._input_shape = input_shape
@@ -44,6 +51,9 @@ class LinearOperator(abc.ABC):
 
         self._input_dtype = input_dtype
         self._output_dtype = output_dtype
+
+        self._pre_scale = pre_scale
+        self._post_scale = post_scale
 
     @property
     def input_dtype(self) -> type:
@@ -86,9 +96,25 @@ class LinearOperator(abc.ABC):
         """module indicating whether the LOR endpoints are stored as numpy or cupy array"""
         return self._xp
 
+    @property
+    def pre_scale(self) -> float | npt.NDArray | cpt.NDArray:
+        return self._pre_scale
+
+    @pre_scale.setter
+    def pre_scale(self, value) -> None:
+        self._pre_scale = value
+
+    @property
+    def post_scale(self) -> float | npt.NDArray | cpt.NDArray:
+        return self._post_scale
+
+    @post_scale.setter
+    def post_scale(self, value) -> None:
+        self._post_scale = value
+
     @abc.abstractmethod
-    def forward(self,
-                x: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+    def _forward(self,
+                 x: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
         """forward step
 
         Parameters
@@ -104,8 +130,8 @@ class LinearOperator(abc.ABC):
         raise NotImplementedError()
 
     @abc.abstractmethod
-    def adjoint(self,
-                y: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+    def _adjoint(self,
+                 y: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
         """adjoint of forward step
 
         Parameters
@@ -119,6 +145,17 @@ class LinearOperator(abc.ABC):
             the adjoint of the linear operator applied to y
         """
         raise NotImplementedError()
+
+    def forward(self,
+                x: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+
+        return self.post_scale * self._forward(self.pre_scale * x)
+
+    def adjoint(self,
+                y: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+
+        return self.xp.conj(self.pre_scale) * self._adjoint(
+            self.xp.conj(self.post_scale) * y)
 
     def adjointness_test(self, verbose=False, **kwargs) -> None:
         """test if adjoint is really the adjoint of forward
@@ -251,7 +288,7 @@ class GradientOperator(LinearOperator):
                          input_dtype=dtype,
                          output_dtype=dtype)
 
-    def forward(self, x):
+    def _forward(self, x):
         g = self.xp.zeros(self.output_shape, dtype=self.output_dtype)
         for i in range(x.ndim):
             g[i, ...] = self.xp.diff(x,
@@ -260,7 +297,7 @@ class GradientOperator(LinearOperator):
 
         return g
 
-    def adjoint(self, y):
+    def _adjoint(self, y):
         d = self.xp.zeros(self.input_shape, dtype=self.input_dtype)
 
         for i in range(y.shape[0]):
