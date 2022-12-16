@@ -16,8 +16,8 @@ class LinearOperator(abc.ABC):
                  input_shape: tuple[int, ...],
                  output_shape: tuple[int, ...],
                  xp: types.ModuleType = np,
-                 input_dtype: type | None = None,
-                 output_dtype: type | None = None) -> None:
+                 input_dtype: type = float,
+                 output_dtype: type = float) -> None:
         """Linear operator abstract base class that maps real or complex array x to y
 
         Parameters
@@ -31,10 +31,10 @@ class LinearOperator(abc.ABC):
             by default numpy
         input_dtype: type | None
             data type of the input array
-            by default None which means xp.float64
+            by default float
         output_dtype: type | None
             data type of the input array
-            by default None which means xp.float64
+            by default float
         """
 
         self._input_shape = input_shape
@@ -42,35 +42,44 @@ class LinearOperator(abc.ABC):
 
         self._xp = xp
 
-        if input_dtype is not None:
-            self._input_dtype = input_dtype
-        else:
-            self._input_dtype = self.xp.float64
-
-        if output_dtype is not None:
-            self._output_dtype = output_dtype
-        else:
-            self._output_dtype = self.xp.float64
+        self._input_dtype = input_dtype
+        self._output_dtype = output_dtype
 
     @property
     def input_dtype(self) -> type:
         """the data type of the input array"""
         return self._input_dtype
 
+    @input_dtype.setter
+    def input_dtype(self, value) -> None:
+        self._input_dtype = value
+
     @property
     def output_dtype(self) -> type:
         """the data type of the output array"""
         return self._output_dtype
+
+    @output_dtype.setter
+    def output_dtype(self, value) -> None:
+        self._output_dtype = value
 
     @property
     def input_shape(self) -> tuple[int, ...]:
         """shape of the input array"""
         return self._input_shape
 
+    @input_shape.setter
+    def input_shape(self, value) -> None:
+        self._input_shape = value
+
     @property
     def output_shape(self) -> tuple[int, ...]:
         """shape of the output array"""
         return self._output_shape
+
+    @output_shape.setter
+    def output_shape(self, value) -> None:
+        self._output_shape = value
 
     @property
     def xp(self) -> types.ModuleType:
@@ -220,7 +229,7 @@ class GradientOperator(LinearOperator):
     def __init__(self,
                  input_shape: tuple[int, ...],
                  xp: types.ModuleType = np,
-                 dtype: type | None = None) -> None:
+                 dtype: type = float) -> None:
         """_summary_
 
         Parameters
@@ -229,9 +238,10 @@ class GradientOperator(LinearOperator):
             the input array shape
         xp : types.ModuleType
             the array module (numpy or cupy)
+            by default numpy
         dtype : type, optional,
             data type of the input array, 
-            by default None which means xp.float64
+            by default float
         """
 
         output_shape = (len(input_shape), ) + input_shape
