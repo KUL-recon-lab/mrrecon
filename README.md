@@ -1,2 +1,2 @@
-# mr_reconstruction
+# mrrecon
 tools related to MR reconstruction
