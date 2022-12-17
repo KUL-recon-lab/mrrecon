@@ -1,6 +1,7 @@
 import types
 import numpy as np
 import numpy.typing as npt
+from scipy.interpolate import interp1d
 
 try:
     import cupy.typing as cpt
@@ -60,3 +61,19 @@ def stack_of_2d_golden_angle(num_stacks: int,
         k[start:end, 1:] = star_kspace_sample_points
 
     return k
+
+
+class TPITrajectory:
+
+    def __init__(self, fname: str, kmax: float = 1.) -> None:
+        self._fname = fname
+        self._kmax = kmax
+
+        tmp = np.loadtxt(fname)
+        self._t_ms = tmp[:, 1]
+        self._k = tmp[:, 0] * self._kmax / tmp[:, 0].max()
+
+        self._t_of_k = interp1d(self._k, self._t_ms)
+
+    def t_of_k(self, k: npt.NDArray, factor: float = 1.) -> npt.NDArray:
+        return factor * self._t_of_k(np.abs(k))

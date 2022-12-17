@@ -78,6 +78,60 @@ class FFT1D(LinearOperator):
                                 norm='ortho')
 
 
+class T2CorrectedFFT1D(FFT1D):
+    """FFT including T2star decay modeling during readout"""
+
+    def __init__(self,
+                 x: npt.NDArray,
+                 t_readout: npt.NDArray,
+                 T2star: npt.NDArray,
+                 xp: types.ModuleType = np) -> None:
+
+        super().__init__(x=x, xp=xp)
+
+        self._t_readout = t_readout
+        self._T2star = T2star
+
+        # precalculate the decay envelopes at the readout times
+        # assumes that readout time is a function of abs(k)
+        self._n = self.x.shape[0]
+        self._decay_envs = self.xp.zeros((self._n // 2 + 1, self._n))
+        self._masks = self.xp.zeros((self._n // 2 + 1, self._n))
+        inds = self.xp.where(T2star > 0)
+        for i, t in enumerate(t_readout[:(self._n // 2 + 1)]):
+            tmp = self.xp.zeros(self._n)
+            tmp[inds] = (t / T2star[inds])
+            self._decay_envs[i, :] = xp.exp(-tmp)
+            self._masks[i, i] = 1
+            self._masks[i, -i] = 1
+
+    @property
+    def masks(self) -> npt.NDArray | cpt.NDArray:
+        return self._masks
+
+    @property
+    def decay_envs(self) -> npt.NDArray | cpt.NDArray:
+        return self._decay_envs
+
+    def _forward(self,
+                 x: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+        y = self.xp.zeros(self.output_shape, dtype=self.output_dtype)
+
+        for i in range(self._n // 2 + 1):
+            y += super()._forward(self.decay_envs[i, :] * x) * self.masks[i, :]
+
+        return y
+
+    def _adjoint(self,
+                 y: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
+        x = self.xp.zeros(self.output_shape, dtype=self.input_dtype)
+
+        for i in range(self._n // 2 + 1):
+            x += super()._adjoint(self.masks[i, :] * y) * self.decay_envs[i, :]
+
+        return x
+
+
 class MultiChannelStackedNonCartesianMRAcquisitionModel(LinearOperator):
     """acquisition model for multi channel MR with non cartesian stacked sampling using pynufft"""
 
