@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import h5py
 import numpy as np
+from scipy.optimize import fmin_cg
 import matplotlib.pyplot as plt
 
 from mrrecon.analytical_fourier_signals import SquareSignal, TriangleSignal, GaussSignal, CompoundAnalysticalFourierSignal
@@ -28,7 +29,7 @@ args = parser.parse_args()
 xp = np
 
 noise_level = args.noise_level
-prior = args.prior
+prior_name = args.prior
 seed = args.seed
 
 n = 64
@@ -40,9 +41,9 @@ readout_time_factor = 1 / args.gradient_factor
 model_T2star = True
 verbose = True
 
-if prior == 'L1L2Norm':
+if prior_name == 'L1L2Norm':
     betas = xp.logspace(-2, 3, 13)
-elif prior == 'SquaredL2Norm':
+elif prior_name == 'SquaredL2Norm':
     betas = xp.logspace(-1, 4, 13)
 else:
     raise ValueError
@@ -140,28 +141,52 @@ prior_operator = GradientOperator(x.shape,
 
 data_operator_norm = data_operator.norm(num_iter=200)
 
-pdhg_recons = xp.zeros((len(betas), n), dtype=xp.complex128)
-pdhg_costs = xp.zeros((len(betas), num_iter), dtype=xp.float64)
+recons = xp.zeros((len(betas), n), dtype=xp.complex128)
+
+data_fidelity = lambda z: data_distance(
+    data_operator.forward(data_operator.unravel_pseudo_complex(z)))
+data_fidelity_gradient = lambda z: data_operator.ravel_pseudo_complex(
+    data_operator.adjoint(
+        data_distance.gradient(
+            data_operator.forward(data_operator.unravel_pseudo_complex(z)))))
 
 for i, beta in enumerate(betas):
     if verbose:
         print(f'{i+1}/{betas.size}')
-    if prior == 'SquaredL2Norm':
+    if prior_name == 'SquaredL2Norm':
         prior_norm = SquaredL2Norm(xp, scale=beta)
-    elif prior == 'L1L2Norm':
+
+        prior = lambda z: prior_norm(
+            prior_operator.forward(prior_operator.unravel_pseudo_complex(z)))
+        prior_gradient = lambda z: prior_operator.ravel_pseudo_complex(
+            prior_operator.adjoint(
+                prior_norm.gradient(
+                    prior_operator.forward(
+                        prior_operator.unravel_pseudo_complex(z)))))
+
+        loss = lambda z: data_fidelity(z) + prior(z)
+        loss_gradient = lambda z: data_fidelity_gradient(z) + prior_gradient(z)
+
+        res = fmin_cg(loss,
+                      np.zeros(2 * x.size, dtype=x.real.dtype),
+                      fprime=loss_gradient,
+                      maxiter=num_iter,
+                      retall=True)
+        recons[i, :] = data_operator.unravel_pseudo_complex(res[0])
+
+    elif prior_name == 'L1L2Norm':
         prior_norm = L2L1Norm(xp, scale=beta)
+
+        pdhg = PDHG(data_operator=data_operator,
+                    data_distance=data_distance,
+                    sigma=0.5 * rho / data_operator_norm,
+                    tau=0.5 / (rho * data_operator_norm),
+                    prior_operator=prior_operator,
+                    prior_functional=prior_norm)
+        pdhg.run(num_iter, verbose=False, calculate_cost=False)
+        recons[i, :] = pdhg.x
     else:
         raise ValueError
-
-    pdhg = PDHG(data_operator=data_operator,
-                data_distance=data_distance,
-                sigma=0.5 * rho / data_operator_norm,
-                tau=0.5 / (rho * data_operator_norm),
-                prior_operator=prior_operator,
-                prior_functional=prior_norm)
-    pdhg.run(num_iter, verbose=False, calculate_cost=True)
-    pdhg_recons[i, :] = pdhg.x
-    pdhg_costs[i, :] = pdhg.cost
 
 #-----------------------------------------------------------------------------------------------------------------
 #-----------------------------------------------------------------------------------------------------------------
@@ -176,7 +201,7 @@ metrics_dict = dict(MSE=MSE(y=np.abs(s_true), weights=weights, xp=xp),
 results = {}
 
 for key, metric in metrics_dict.items():
-    results[key] = [metric(np.abs(recon)) for recon in pdhg_recons]
+    results[key] = [metric(np.abs(recon)) for recon in recons]
 
 #-----------------------------------------------------------------------------------------------------------------
 #-----------------------------------------------------------------------------------------------------------------
@@ -186,7 +211,7 @@ for key, metric in metrics_dict.items():
 res_path = Path('results')
 res_path.mkdir(exist_ok=True)
 
-res_file = res_path / f'nl{noise_level}_gf{args.gradient_factor}_{prior}_s{seed}.h5'
+res_file = res_path / f'nl{noise_level}_gf{args.gradient_factor}_{prior_name}_s{seed}.h5'
 
 with h5py.File(res_file, 'w') as f:
     f.create_dataset('betas', data=betas)
@@ -196,8 +221,7 @@ with h5py.File(res_file, 'w') as f:
     f.create_dataset('noise_free_data', data=noise_free_data)
     f.create_dataset('data', data=data)
     f.create_dataset('recon_ifft', data=recon_ifft)
-    f.create_dataset('pdhg_recons', data=pdhg_recons)
-    f.create_dataset('pdhg_costs', data=pdhg_costs)
+    f.create_dataset('recons', data=recons)
     f.create_dataset('T2star', data=signal.T2star(x))
     f.create_dataset('t_readout', data=t_readout)
     for key, metric in results.items():
@@ -223,19 +247,16 @@ ax[0, 0].plot(x, recon_ifft.imag, '-', lw=0.8)
 ax[0, 1].plot(xx, signal.signal(xx).real, 'k-', lw=0.5)
 ax[0, 2].plot(xx, signal.signal(xx).imag, 'k-', lw=0.5)
 for i, beta in enumerate(betas):
-    ax[0, 1].plot(x, pdhg_recons[i, :].real, '-', lw=0.8)
+    ax[0, 1].plot(x, recons[i, :].real, '-', lw=0.8)
     ax[0, 2].plot(x,
-                  pdhg_recons[i, :].imag,
+                  recons[i, :].imag,
                   '-',
                   lw=0.8,
-                  label=f'{prior} {beta:.1e}')
+                  label=f'{prior_name} {beta:.1e}')
 
 ax[1, 0].plot(kk, signal.continous_ft(kk).real, 'k-', lw=0.5)
 ax[1, 0].plot(k, noise_free_data.real, 'x', ms=4)
 ax[1, 0].plot(k, data.real, '.', ms=4)
-
-for i, beta in enumerate(betas):
-    ax[1, 1].loglog(it, pdhg_costs[i, ...])
 
 for axx in ax.ravel():
     axx.grid(ls=':')
@@ -268,9 +289,9 @@ for key, metric in results.items():
     ax2[0, i].set_xlabel('beta')
     ax2[0, i].set_ylabel(key)
     ax2[1, i].plot(xx, np.abs(signal.signal(xx)), 'k-', lw=0.5)
-    ax2[1, i].plot(x, np.abs(pdhg_recons[imin, :]), '-', lw=0.8)
+    ax2[1, i].plot(x, np.abs(recons[imin, :]), '-', lw=0.8)
     ax2[2, i].plot(xx, signal.signal(xx).real, 'k-', lw=0.5)
-    ax2[2, i].plot(x, pdhg_recons[imin, :].real, '-', lw=0.8)
+    ax2[2, i].plot(x, recons[imin, :].real, '-', lw=0.8)
     ax2[0, i].set_title(key)
     i += 1
 
