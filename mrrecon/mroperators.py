@@ -75,7 +75,7 @@ class FFT1D(LinearOperator):
     def inverse(self,
                 y: npt.NDArray | cpt.NDArray) -> npt.NDArray | cpt.NDArray:
         return self.xp.fft.ifft(y / (self.phase_factor * self.scale_factor),
-                                norm='ortho')
+                                norm='ortho') / self.post_scale
 
 
 class T2CorrectedFFT1D(FFT1D):

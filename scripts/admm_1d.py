@@ -16,8 +16,14 @@ from mrrecon.algorithms import ADMM
 num_outer_iterations = 500
 # maximum number of conjugate gradient iterations
 max_num_cg_iterations = 100
-# weight of quadratic prior
-prior_weight = 3e-1
+
+# prior norm and weight
+prior_norm = L2L1Norm(xp=np)
+prior_norm.scale = 3e-1
+
+#prior_norm = SquaredL2Norm(xp=np)
+#prior_norm.scale = 3e0
+
 # image size
 n = 32
 # rho parameter of ADMM
@@ -50,9 +56,6 @@ data_operator = FFT1D(sampling_points, xp=np)
 data_distance = SquaredL2Norm(xp=np)
 
 prior_operator = GradientOperator(true_img.shape, xp=np, dtype=true_img.dtype)
-prior_norm = L2L1Norm(xp=np)
-# the prior weight can be set by setting the "scale" property of the functional
-prior_norm.scale = prior_weight
 
 # (optional) use a post scaling factor such that the norm of the data and
 # prior operator are similar
@@ -102,7 +105,7 @@ for i, rho in enumerate(rhos):
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
 
-ifft = data_operator.inverse(data) / data_operator.post_scale
+ifft = data_operator.inverse(data)
 
 fig, ax = plt.subplots(2, 3, figsize=(9, 6), sharex='row')
 ax[0, 0].plot(true_img.real, 'k')
