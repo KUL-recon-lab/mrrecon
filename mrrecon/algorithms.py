@@ -1,12 +1,13 @@
 import types
 import numpy.typing as npt
+from scipy.optimize import fmin_cg
 
 try:
     import cupy.typing as cpt
 except ModuleNotFoundError:
     import numpy.typing as cpt
 
-from .functionals import ConvexFunctionalWithProx
+from .functionals import ConvexFunctionalWithProx, SmoothFunctional, SquaredL2Norm
 from .linearoperators import LinearOperator
 
 
@@ -200,3 +201,157 @@ class PDHG:
                     self._cost_prior.append(
                         self._prior_functional(
                             self._prior_operator.forward(self._x)))
+
+
+class ADMM:
+    """ADMM to minimize f(x) + g(Kx) 
+       where f(x) is the smooth data fidelity with known gradient
+       K is the gradient operator
+       and g(.) is a gradient norm (e.g. non-smooth L1L2norm -> Total Variation)
+    """
+
+    def __init__(self, data_operator: LinearOperator,
+                 data_distance: SmoothFunctional,
+                 prior_operator: LinearOperator,
+                 prior_functional: ConvexFunctionalWithProx) -> None:
+
+        self._data_operator = data_operator
+        self._data_distance = data_distance
+        self._prior_operator = prior_operator
+        self._prior_functional = prior_functional
+        self._rho = 1.
+
+        self._max_num_cg_iterations = 100
+        self._cg_kwargs = {}
+
+        self._cost_data = []
+        self._cost_prior = []
+
+        ######################
+        # initialize variables
+        ######################
+
+        self._x = self.xp.zeros(data_operator.input_shape,
+                                dtype=data_operator.input_dtype)
+        # since we will pass x to scipy's fmin_cg, we have flatten it and convert it
+        # to pseudo complex
+        self._x = data_operator.ravel_pseudo_complex(self._x)
+
+        self._u = self.xp.zeros(prior_operator.output_shape,
+                                dtype=prior_operator.output_dtype)
+        self._z = self.xp.zeros(prior_operator.output_shape,
+                                dtype=prior_operator.output_dtype)
+
+        # the actual data fidelity as a function of the image x (not expected_data(x))
+        # is the data_distance evaluated at (data_operator.forward(x))
+        self._data_fidelity = lambda z: self._data_distance(
+            self._data_operator.forward(
+                self._data_operator.unravel_pseudo_complex(z)))
+
+        # using the chain rule, we can calculate the gradient of the
+        # data fidelity term with respect to the image x which is given by
+        # data_operator.adjoint( data_distance.gradient( data_operator.forward(x) ) )
+        self._data_fidelity_gradient = lambda z: self._data_operator.ravel_pseudo_complex(
+            self._data_operator.adjoint(
+                self._data_distance.gradient(
+                    self._data_operator.forward(
+                        self._data_operator.unravel_pseudo_complex(z)))))
+
+        # since scipy's optimization algorithms (e.g. fmin_cg) can only handle "flat"
+        # real input arrays, we use the "(un)ravel complex" methods of the linear
+        # operator class to transform flattened real arrays into unflattened complex arrays
+
+    @property
+    def x(self) -> npt.NDArray | cpt.NDArray:
+        return self._data_operator.unravel_pseudo_complex(self._x)
+
+    @property
+    def u(self) -> npt.NDArray | cpt.NDArray:
+        return self._u
+
+    @property
+    def z(self) -> npt.NDArray | cpt.NDArray:
+        return self._z
+
+    @property
+    def rho(self) -> float:
+        return self._rho
+
+    @rho.setter
+    def rho(self, value) -> None:
+        self._rho = value
+
+    @property
+    def xp(self) -> types.ModuleType:
+        return self._data_operator.xp
+
+    @property
+    def cost_data(self) -> npt.NDArray | cpt.NDArray:
+        return self.xp.array(self._cost_data)
+
+    @property
+    def cost_prior(self) -> npt.NDArray | cpt.NDArray:
+        return self.xp.array(self._cost_prior)
+
+    @property
+    def cost(self) -> npt.NDArray | cpt.NDArray:
+        return self.cost_data + self.cost_prior
+
+    def update(self) -> None:
+        ################################################################################
+        # 1st ADMM subproblem - x update = argmin_x f(x) + 0.5*rho*||Kx - (z - u) ||_2^2
+        ################################################################################
+
+        # we setup a new function (and its gradient) that is the sum of the data fidelity f(x)
+        # and the added quadratic term
+
+        extra_quadratic_norm = SquaredL2Norm(xp=self.xp)
+        extra_quadratic_norm.shift = (self._z - self._u)
+        # the scale here is only rho instead of rho/2 since the SquaredL2Norm is 1/2 ||.||_2^2
+        extra_quadratic_norm.scale = self._rho
+
+        extra_quadratic = lambda y: self._prior_functional(
+            self._prior_operator.forward(
+                self._prior_operator.unravel_pseudo_complex(y)))
+
+        extra_quadratic_gradient = lambda y: self._prior_operator.ravel_pseudo_complex(
+            self._prior_operator.adjoint(
+                extra_quadratic_norm.gradient(
+                    self._prior_operator.forward(
+                        self._prior_operator.unravel_pseudo_complex(y)))))
+
+        # combine the data fidelity and the extra quadratic into a signle function and gradient
+        # that we can pass to scipy's fmin_cg
+
+        loss = lambda y: self._data_fidelity(y) + extra_quadratic(y)
+        loss_gradient = lambda y: self._data_fidelity_gradient(
+            y) + extra_quadratic_gradient(y)
+
+        self._x = fmin_cg(loss,
+                          self._x,
+                          fprime=loss_gradient,
+                          maxiter=self._max_num_cg_iterations,
+                          **self._cg_kwargs)
+
+        ################################################################################
+        # 2nd ADMM subproblem - z update = prox_g_(1/rho) (Kx + u)
+        ################################################################################
+
+        self._z = self._prior_functional.prox(
+            self._prior_operator.forward(self.x) + self._u, 1 / self._rho)
+
+        ################################################################################
+        # 3rd ADMM subproblem - u update = u + (Kx - z)
+        ################################################################################
+
+        self._u += (self._prior_operator.forward(self.x) - self._z)
+
+    def run(self, num_iterations: int, calculate_cost=False) -> None:
+        for _ in range(num_iterations):
+            self.update()
+            if calculate_cost:
+                self._cost_data.append(self._data_fidelity(self._x))
+                if self._prior_functional is not None:
+                    self._cost_prior.append(
+                        self._prior_functional(
+                            self._prior_operator.forward(self.x)))
