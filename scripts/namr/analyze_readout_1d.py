@@ -5,13 +5,20 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-res_dir = 'results/221217_SquaredL2Norm'
-noise_level = '0.2'
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('run', type=str)
+parser.add_argument('--nl', type=str, help='noise level', default='0.2')
+args = parser.parse_args()
+
+res_dir = Path('results') / args.run
+noise_level = args.nl
 n = 64
 
 #---------------------------------------------------------------------------
 
-res_files = sorted(list(Path(res_dir).glob(f'nl{noise_level}*.h5')))
+res_files = sorted(list(res_dir.glob(f'nl{noise_level}*.h5')))
 
 df = pd.DataFrame()
 
@@ -98,6 +105,7 @@ fig.suptitle(
     f'mean of {num_seeds} noise realizations - base noise level {noise_level}',
     fontsize='medium')
 fig.tight_layout()
+fig.savefig(res_dir / f'01_mean_nl_{noise_level}.png')
 fig.show()
 
 #---------------------------------------------------------------------------------
@@ -124,6 +132,7 @@ fig2.suptitle(
     f'std.dev. of {num_seeds} noise realizations - base noise level {noise_level}',
     fontsize='medium')
 fig2.tight_layout()
+fig2.savefig(res_dir / f'02_std_nl_{noise_level}.png')
 fig2.show()
 
 #---------------------------------------------------------------------------------
@@ -150,6 +159,7 @@ for axx in ax3.ravel():
 fig3.suptitle(f'1st noise realization - base noise level {noise_level}',
               fontsize='medium')
 fig3.tight_layout()
+fig3.savefig(res_dir / f'03_first_nl_{noise_level}.png')
 fig3.show()
 
 #---------------------------------------------------------------------------------
@@ -175,4 +185,5 @@ for axx in ax4.ravel():
 
 ax4[0].legend(ncol=2, fontsize='small')
 fig4.tight_layout()
+fig4.savefig(res_dir / f'04_biasnoise_nl_{noise_level}.png')
 fig4.show()

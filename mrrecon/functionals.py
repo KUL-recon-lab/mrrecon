@@ -25,9 +25,17 @@ class Functional(abc.ABC):
     def scale(self) -> float:
         return self._scale
 
+    @scale.setter
+    def scale(self, value: float) -> None:
+        self._scale = value
+
     @property
     def shift(self) -> float | npt.NDArray | cpt.NDArray:
         return self._shift
+
+    @shift.setter
+    def shift(self, value: float | npt.NDArray | cpt.NDArray) -> None:
+        self._shift = value
 
     @property
     def xp(self) -> types.ModuleType:
