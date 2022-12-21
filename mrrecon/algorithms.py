@@ -297,6 +297,14 @@ class ADMM:
     def cost(self) -> npt.NDArray | cpt.NDArray:
         return self.cost_data + self.cost_prior
 
+    @property
+    def cg_kwargs(self) -> dict:
+        return self._cg_kwargs
+
+    @cg_kwargs.setter
+    def cg_kwargs(self, value: dict) -> None:
+        self._cg_kwargs = value
+
     def update(self) -> None:
         ################################################################################
         # 1st ADMM subproblem - x update = argmin_x f(x) + 0.5*rho*||Kx - (z - u) ||_2^2
