@@ -10,24 +10,24 @@ import matplotlib.pyplot as plt
 from mrrecon.linearoperators import GradientOperator
 from mrrecon.mroperators import FFT1D
 from mrrecon.functionals import SquaredL2Norm, L2L1Norm
-from mrrecon.algorithms import ADMM
+from mrrecon.algorithms import ADMM, PDHG
 
 # maximum number of outer ADMM iterations
-num_outer_iterations = 500
+num_outer_iterations = 300
 # maximum number of conjugate gradient iterations
 max_num_cg_iterations = 100
 
 # prior norm and weight
 prior_norm = L2L1Norm(xp=np)
-prior_norm.scale = 3e-1
+prior_norm.scale = 5e0
 
 #prior_norm = SquaredL2Norm(xp=np)
-#prior_norm.scale = 3e0
+#prior_norm.scale = 3e2
 
 # image size
 n = 32
 # rho parameter of ADMM
-rhos = [1e-1, 1e0, 1e1, 1e2]
+rhos = [1e-3, 1e-2, 1e-1, 1e0, 1e1, 1e2]
 
 noise_level = 0.1
 seed = 1
@@ -82,6 +82,7 @@ data_distance.shift = data
 #--- run ADMM updates --------------------------------------------------------
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
+ifft = data_operator.inverse(data)
 
 recons = np.zeros((len(rhos), n), dtype=complex)
 costs = np.zeros((len(rhos), num_outer_iterations))
@@ -92,6 +93,7 @@ for i, rho in enumerate(rhos):
     reconstructor = ADMM(data_operator, data_distance, prior_operator,
                          prior_norm)
     reconstructor.rho = rho
+    reconstructor.x = ifft
     reconstructor.run(num_outer_iterations, calculate_cost=True)
 
     recons[i, ...] = reconstructor.x
@@ -99,13 +101,22 @@ for i, rho in enumerate(rhos):
     data_costs[i, ...] = reconstructor.cost_data
     prior_costs[i, ...] = reconstructor.cost_prior
 
+# run PDHG as comparison
+pdhg = PDHG(data_operator,
+            data_distance,
+            sigma=10 * 0.7 / data_operator.norm(),
+            tau=0.7 / data_operator.norm() / 10,
+            prior_operator=prior_operator,
+            prior_functional=prior_norm)
+pdhg.x = ifft
+
+pdhg.run(num_outer_iterations, calculate_cost=True)
+
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
 #--- visualizations ----------------------------------------------------------
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
-
-ifft = data_operator.inverse(data)
 
 fig, ax = plt.subplots(2, 3, figsize=(9, 6), sharex='row')
 ax[0, 0].plot(true_img.real, 'k')
@@ -129,6 +140,20 @@ for i, rho in enumerate(rhos):
                     costs[i, ...],
                     color=plt.cm.tab10(1 + i),
                     label=f'rho {rho:.1e}')
+
+ax[0, 0].plot(pdhg.x.real, color=plt.cm.tab10(2 + i))
+ax[0, 1].plot(pdhg.x.imag, color=plt.cm.tab10(2 + i))
+ax[0, 2].plot(np.abs(pdhg.x), color=plt.cm.tab10(2 + i))
+ax[1, 0].loglog(np.arange(1, num_outer_iterations + 1),
+                pdhg.cost_data,
+                color=plt.cm.tab10(2 + i))
+ax[1, 1].loglog(np.arange(1, num_outer_iterations + 1),
+                pdhg.cost_prior,
+                color=plt.cm.tab10(2 + i))
+ax[1, 2].loglog(np.arange(1, num_outer_iterations + 1),
+                pdhg.cost,
+                color=plt.cm.tab10(2 + i),
+                label='pdhg')
 
 ax[1, 0].set_title('data fidelity', fontsize='medium')
 ax[1, 1].set_title('prior', fontsize='medium')

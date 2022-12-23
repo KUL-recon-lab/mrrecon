@@ -98,6 +98,10 @@ class PDHG:
     def x(self) -> npt.NDArray | cpt.NDArray:
         return self._x
 
+    @x.setter
+    def x(self, value) -> None:
+        self._x = value
+
     @property
     def y_data(self) -> npt.NDArray | cpt.NDArray:
         return self._y_data
@@ -265,6 +269,10 @@ class ADMM:
     def x(self) -> npt.NDArray | cpt.NDArray:
         return self._data_operator.unravel_pseudo_complex(self._x)
 
+    @x.setter
+    def x(self, value) -> None:
+        self._x = self._data_operator.ravel_pseudo_complex(value)
+
     @property
     def u(self) -> npt.NDArray | cpt.NDArray:
         return self._u
@@ -335,11 +343,15 @@ class ADMM:
         loss_gradient = lambda y: self._data_fidelity_gradient(
             y) + extra_quadratic_gradient(y)
 
-        self._x = fmin_cg(loss,
-                          self._x,
-                          fprime=loss_gradient,
-                          maxiter=self._max_num_cg_iterations,
-                          **self._cg_kwargs)
+        x0 = self._x.copy()
+
+        res = fmin_cg(loss,
+                      x0,
+                      fprime=loss_gradient,
+                      maxiter=self._max_num_cg_iterations,
+                      **self._cg_kwargs)
+
+        self._x = res.copy()
 
         ################################################################################
         # 2nd ADMM subproblem - z update = prox_g_(1/rho) (Kx + u)
