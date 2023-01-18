@@ -1,5 +1,6 @@
 import types
 import numpy.typing as npt
+import math
 from scipy.optimize import fmin_cg
 
 try:
@@ -205,6 +206,167 @@ class PDHG:
                     self._cost_prior.append(
                         self._prior_functional(
                             self._prior_operator.forward(self._x)))
+
+
+class PDHG_ALG2:
+    """accelerated primal-dual hybrid gradient algorithm 2 for optimizing
+       F(operator x) + G(x) with
+       gradient G lipschitz"""
+
+    def __init__(self, operator: LinearOperator,
+                 f_functional: ConvexFunctionalWithProx,
+                 g_functional: ConvexFunctionalWithProx,
+                 grad_g_lipschitz: float, sigma: float, tau: float) -> None:
+        """
+        Parameters
+        ----------
+        operator : operators.LinearOperator
+            linear operator
+        f_functional : functionals.ConvexFunctionalWithProx
+            F functional
+        g_functional : functionals.ConvexFunctionalWithProx
+            the G functional
+        grad_g_lipschitz : float
+            Lipschitz constant of the gradient of G
+        sigma : float
+            primal step size 
+        tau : float
+            dual step size 
+        """
+
+        self._operator = operator
+        self._f_functional = f_functional
+
+        self._sigma = sigma
+        self._tau = tau
+        self._theta = 1.
+
+        self._g_functional = g_functional
+        self._grad_g_lipschitz = grad_g_lipschitz
+
+        self._x = self.xp.zeros(self._operator.input_shape,
+                                dtype=self._operator.input_dtype)
+        self._xbar = self.xp.zeros(self._operator.input_shape,
+                                   dtype=self._operator.input_dtype)
+        self._y = self.xp.zeros(self._operator.output_shape,
+                                dtype=self._operator.output_dtype)
+
+        self.setup()
+
+    @property
+    def operator(self) -> LinearOperator:
+        return self._operator
+
+    @property
+    def f_functional(self) -> ConvexFunctionalWithProx:
+        return self._f_functional
+
+    @property
+    def g_functional(self) -> ConvexFunctionalWithProx:
+        return self._g_functional
+
+    @property
+    def grad_g_lipschitz(self) -> float:
+        return self._grad_g_lipschitz
+
+    @property
+    def xp(self) -> types.ModuleType:
+        return self._operator.xp
+
+    @property
+    def x(self) -> npt.NDArray | cpt.NDArray:
+        return self._x
+
+    @x.setter
+    def x(self, value) -> None:
+        self._x = value
+
+    @property
+    def xbar(self) -> npt.NDArray | cpt.NDArray:
+        return self._xbar
+
+    @xbar.setter
+    def xbar(self, value) -> None:
+        self._xbar = value
+
+    @property
+    def y(self) -> npt.NDArray | cpt.NDArray:
+        return self._y
+
+    @property
+    def sigma(self) -> float:
+        return self._sigma
+
+    @sigma.setter
+    def sigma(self, value) -> None:
+        self._sigma = value
+
+    @property
+    def tau(self) -> float:
+        return self._tau
+
+    @tau.setter
+    def tau(self, value) -> None:
+        self._tau = value
+
+    @property
+    def theta(self) -> float:
+        return self._theta
+
+    @theta.setter
+    def theta(self, value) -> None:
+        self._theta = value
+
+    @property
+    def epoch_counter(self) -> int:
+        return self._epoch_counter
+
+    @property
+    def cost(self) -> list[float]:
+        return self._cost
+
+    def setup(self) -> None:
+        self._x = self.xp.zeros(self._operator.input_shape,
+                                dtype=self._operator.input_dtype)
+        self._xbar = self.xp.zeros(self._operator.input_shape,
+                                   dtype=self._operator.input_dtype)
+        self._y = self.xp.zeros(self._operator.output_shape,
+                                dtype=self._operator.output_dtype)
+
+        self._epoch_counter = 0
+        self._cost = []
+
+    def update(self) -> None:
+        # prior operator forward step
+        self._y = self._y + self.sigma * self.operator.forward(self._xbar)
+        self._y = self.f_functional.prox_convex_dual(self._y, sigma=self.sigma)
+
+        x_plus = self._x - self.tau * self.operator.adjoint(self._y)
+        x_plus = self.g_functional.prox(x_plus, self.tau)
+
+        # update the step sizes
+        self.theta = 1 / math.sqrt(1 + 2 * self.grad_g_lipschitz * self.tau)
+        self.tau = self.theta * self.tau
+        self.sigma = self.theta / self.sigma
+
+        self._xbar = x_plus + self.theta * (x_plus - self._x)
+        self._x = x_plus.copy()
+
+        self._epoch_counter += 1
+
+    def run(self,
+            num_iterations: int,
+            calculate_cost: bool = False,
+            verbose: bool = True) -> None:
+
+        for _ in range(num_iterations):
+            self.update()
+            if verbose:
+                print(f'iteration {self.epoch_counter}')
+            if calculate_cost:
+                self._cost.append(
+                    self.f_functional(self.operator.forward(self.x)) +
+                    self.g_functional(self.x))
 
 
 class ADMM:
