@@ -14,6 +14,9 @@ beta = 0.3
 niter = 1000
 rho = 1.
 
+# L1Norm or L2L1Norm
+prior_norm = 'L1Norm'
+
 #------------------------------------------------------------------------
 
 np.random.seed(1)
@@ -32,12 +35,21 @@ f_functional = functionals.L2L1Norm(xp, scale=beta)
 
 operator_norm = np.sqrt(img.ndim * 4)
 
-denoiser = algorithms.PDHG_ALG2(operator,
-                                f_functional,
-                                g_functional,
-                                grad_g_lipschitz=1.,
-                                sigma=rho / operator_norm,
-                                tau=1 / (rho * operator_norm))
+if prior_norm == 'L1Norm':
+    f_functional = functionals.L1Norm(xp, scale=beta)
+    grad_g_lipschitz = None
+elif prior_norm == 'L2L1Norm':
+    f_functional = functionals.L2L1Norm(xp, scale=beta)
+    grad_g_lipschitz = 1
+else:
+    raise ValueError
+
+denoiser = algorithms.PDHG_ALG12(operator,
+                                 f_functional,
+                                 g_functional,
+                                 grad_g_lipschitz=grad_g_lipschitz,
+                                 sigma=rho / operator_norm,
+                                 tau=1 / (rho * operator_norm))
 
 # set initial values for x and xbar
 denoiser.x = noisy_img

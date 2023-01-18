@@ -10,9 +10,12 @@ import mrrecon.functionals as functionals
 xp = np
 n = 16
 noise_level = 0.3
-beta = 0.3
+beta = 0.2
 niter = 1000
 rho = 1.
+
+# L1Norm or L2L1Norm
+prior_norm = 'L1Norm'
 
 #------------------------------------------------------------------------
 
@@ -26,16 +29,24 @@ noisy_img = img + noise_level * xp.random.randn(*img.shape)
 g_functional = functionals.SquaredL2Norm(xp, shift=noisy_img)
 
 operator = operators.GradientOperator(img.shape, xp=xp, dtype=img.dtype)
-f_functional = functionals.L2L1Norm(xp, scale=beta)
+
+if prior_norm == 'L1Norm':
+    f_functional = functionals.L1Norm(xp, scale=beta)
+    grad_g_lipschitz = None
+elif prior_norm == 'L2L1Norm':
+    f_functional = functionals.L2L1Norm(xp, scale=beta)
+    grad_g_lipschitz = 1
+else:
+    raise ValueError
 
 operator_norm = np.sqrt(img.ndim * 4)
 
-denoiser = algorithms.PDHG_ALG2(operator,
-                                f_functional,
-                                g_functional,
-                                grad_g_lipschitz=1.,
-                                sigma=rho / operator_norm,
-                                tau=1 / (rho * operator_norm))
+denoiser = algorithms.PDHG_ALG12(operator,
+                                 f_functional,
+                                 g_functional,
+                                 grad_g_lipschitz=grad_g_lipschitz,
+                                 sigma=0.99 * rho / operator_norm,
+                                 tau=0.99 / (rho * operator_norm))
 
 # set initial values for x and xbar
 denoiser.x = noisy_img
@@ -68,10 +79,10 @@ ax[1, 2].grid(ls=':')
 
 ax[0, 0].set_title('noise free image')
 ax[0, 1].set_title('noisy image')
-ax[0, 2].set_title('PDHG ALG2 denoised')
+ax[0, 2].set_title('PDHG ALG denoised')
 ax[1, 0].set_title('brute force denoised')
 ax[1, 1].set_title('difference')
-ax[1, 2].set_title('cost PDHG ALG2')
+ax[1, 2].set_title('cost PDHG ALG')
 
 fig.tight_layout()
 fig.show()

@@ -207,3 +207,30 @@ class L2L1Norm(ConvexFunctionalWithDualProx):
             r.imag = x.imag / self.xp.clip(gnorm_imag, 1, None)
 
         return r
+
+
+class L1Norm(ConvexFunctionalWithDualProx):
+    """L1 norm - sum of absolute values"""
+
+    def _call_f(self, x: npt.NDArray | cpt.NDArray) -> float:
+        """f(x) = sum_i SquaredL2Norm(x_i)"""
+        if self.xp.isrealobj(x):
+            res = self.xp.abs(x).sum()
+        else:
+            res = self.xp.abs(x.real).sum() + self.xp.abs(x.imag).sum()
+
+        return float(res)
+
+    def _prox_convex_dual_f(
+            self, x: npt.NDArray | cpt.NDArray,
+            sigma: float | npt.NDArray | cpt.NDArray
+    ) -> npt.NDArray | cpt.NDArray:
+        if self.xp.isrealobj(x):
+            r = self.xp.clip(x, -1, 1)
+        else:
+            r = self.xp.zeros_like(x)
+
+            r.real = self.xp.clip(x.real, -1, 1)
+            r.imag = self.xp.clip(x.imag, -1, 1)
+
+        return r

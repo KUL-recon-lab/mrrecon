@@ -208,15 +208,18 @@ class PDHG:
                             self._prior_operator.forward(self._x)))
 
 
-class PDHG_ALG2:
-    """accelerated primal-dual hybrid gradient algorithm 2 for optimizing
+class PDHG_ALG12:
+    """(accelerated) primal-dual hybrid gradient algorithm 2 for optimizing
        F(operator x) + G(x) with
        gradient G lipschitz"""
 
-    def __init__(self, operator: LinearOperator,
+    def __init__(self,
+                 operator: LinearOperator,
                  f_functional: ConvexFunctionalWithProx,
                  g_functional: ConvexFunctionalWithProx,
-                 grad_g_lipschitz: float, sigma: float, tau: float) -> None:
+                 grad_g_lipschitz: float | None = None,
+                 sigma: float | None = None,
+                 tau: float | None = None) -> None:
         """
         Parameters
         ----------
@@ -226,20 +229,35 @@ class PDHG_ALG2:
             F functional
         g_functional : functionals.ConvexFunctionalWithProx
             the G functional
-        grad_g_lipschitz : float
+        grad_g_lipschitz : float | None
             Lipschitz constant of the gradient of G
-        sigma : float
-            primal step size 
-        tau : float
-            dual step size 
+            if None, PDHG ALG1 (no acceleration) i used
+            if not None, PDHG ALG2 (with step size update) is used
+        sigma : float | None
+            primal step size, if None 1/operator_norm 
+        tau : float | None
+            dual step size, if None 1/operator_norm 
         """
 
         self._operator = operator
         self._f_functional = f_functional
 
-        self._sigma = sigma
-        self._tau = tau
-        self._theta = 1.
+        operator_norm = None
+
+        if sigma is None:
+            operator_norm = operator.norm()
+            self._sigma = 0.99 / operator_norm
+        else:
+            self._sigma = sigma
+
+        if tau is None:
+            if operator_norm is None:
+                operator_norm = operator.norm()
+            self._tau = 0.99 / operator_norm
+        else:
+            self._tau = tau
+
+        self._theta = 0.999
 
         self._g_functional = g_functional
         self._grad_g_lipschitz = grad_g_lipschitz
@@ -266,7 +284,7 @@ class PDHG_ALG2:
         return self._g_functional
 
     @property
-    def grad_g_lipschitz(self) -> float:
+    def grad_g_lipschitz(self) -> float | None:
         return self._grad_g_lipschitz
 
     @property
@@ -345,9 +363,11 @@ class PDHG_ALG2:
         x_plus = self.g_functional.prox(x_plus, self.tau)
 
         # update the step sizes
-        self.theta = 1 / math.sqrt(1 + 2 * self.grad_g_lipschitz * self.tau)
-        self.tau = self.theta * self.tau
-        self.sigma = self.theta / self.sigma
+        if not self.grad_g_lipschitz is None:
+            self.theta = 1 / math.sqrt(1 +
+                                       2 * self.grad_g_lipschitz * self.tau)
+            self.tau = self.theta * self.tau
+            self.sigma = self.theta / self.sigma
 
         self._xbar = x_plus + self.theta * (x_plus - self._x)
         self._x = x_plus.copy()
