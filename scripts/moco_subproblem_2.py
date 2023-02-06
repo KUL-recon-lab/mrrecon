@@ -3,6 +3,7 @@ import numpy as np
 import abc
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+from scipy.optimize import minimize
 
 
 class SpatialTransform(abc.ABC):
@@ -69,13 +70,44 @@ class InterpolatedSignal:
         return y
 
 
+class CostFunction:
+
+    def __init__(self, interpolatad_singal: InterpolatedSignal,
+                 v_amps: np.ndarray, rho: float):
+        self._interpolatad_singal = interpolatad_singal
+        self._v_amps = v_amps
+        self._v_amps_inverse_warped = self._interpolatad_singal.inverse_warp(
+            v_amps)
+        self._rho = rho
+
+    @staticmethod
+    def prior(x):
+        return np.abs(x[1:] - x[:-1]).mean()
+
+    def __call__(self, z_amps):
+        diff = self._interpolatad_singal.forward_warp(z_amps) - self._v_amps
+        data_fidelity = 0.5 * self._rho * (diff**2).sum()
+        return data_fidelity + self.prior(z_amps)
+
+    def __call2__(self, z_amps):
+        diff = z_amps - self._v_amps_inverse_warped
+        data_fidelity = 0.5 * self._rho * (diff**2).sum()
+        return data_fidelity + self.prior(z_amps)
+
+
 #-----------------------------------------------------------------
 #-----------------------------------------------------------------
 #-----------------------------------------------------------------
+
+rhos = [3e-2, 1e-1, 3e-1, 1e0, 3e0]
+tol = 1e-6
 
 np.random.seed(1)
 
-amps = gaussian_filter(np.random.rand(64), 2.5)
+#amps = gaussian_filter(np.pad(2 * np.random.rand(32) - 1, 6), 1.75)
+amps = gaussian_filter(np.pad(2 * np.random.rand(64) - 1, 6), 1.75)
+amps[0] = 0
+amps[-1] = 0
 
 grid = np.arange(amps.size).astype(float)
 grid_highres = np.linspace(0, grid.max(), 10000)
@@ -88,8 +120,23 @@ signal = InterpolatedSignal(grid, transform=transform)
 signal_highres = InterpolatedSignal(grid_highres, transform=transform)
 
 #--------------------------------------------------------------------------------
-amps2 = signal.forward_warp(amps)
-amps3 = signal.inverse_warp(amps2)
+amps_fwd = signal.forward_warp(amps)
+amps_fwd_inv = signal.inverse_warp(amps_fwd)
+
+#--------------------------------------------------------------------------------
+# solve the two different minimization problems
+z0 = np.ones_like(amps)
+
+z1 = np.zeros((len(rhos), amps.shape[0]))
+z2 = np.zeros((len(rhos), amps.shape[0]))
+
+for i, rho in enumerate(rhos):
+    print(i, rho)
+    cost = CostFunction(signal, amps_fwd, rho=rho)
+    res1 = minimize(cost.__call__, z0, tol=tol)
+    res2 = minimize(cost.__call2__, z0, tol=tol)
+    z1[i, :] = res1.x
+    z2[i, :] = res2.x
 
 #--------------------------------------------------------------------------------
 # plots
@@ -107,8 +154,23 @@ for axx in ax.ravel():
 fig.tight_layout()
 fig.show()
 
-#fig2, ax2 = plt.subplots()
-#ax2.plot(amps, 'o-')
-#ax2.plot(amps2, '.')
-#ax2.plot(amps3, '.')
-#fig2.show()
+fig2, ax2 = plt.subplots()
+ax2.plot(amps, 'o-')
+ax2.plot(amps_fwd, '.')
+ax2.plot(amps_fwd_inv, '.')
+fig2.show()
+
+fig3, ax3 = plt.subplots(1,
+                         len(rhos),
+                         figsize=(len(rhos) * 3, 3),
+                         sharex=True,
+                         sharey=True)
+
+for i, rho in enumerate(rhos):
+    ax3[i].plot(z1[i, :])
+    ax3[i].plot(z2[i, :])
+    ax3[i].set_title(f'rho {rho:.2E}')
+for axx in ax3.ravel():
+    axx.grid(ls=':')
+fig3.tight_layout()
+fig3.show()
