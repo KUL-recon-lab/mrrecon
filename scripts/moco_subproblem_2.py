@@ -70,13 +70,13 @@ class InterpolatedSignal:
         return y
 
 
-class CostFunction:
+class CostFunctionSubProblem2:
 
-    def __init__(self, interpolatad_singal: InterpolatedSignal,
+    def __init__(self, interpolatad_signal: InterpolatedSignal,
                  v_amps: np.ndarray, rho: float):
-        self._interpolatad_singal = interpolatad_singal
+        self._interpolatad_signal = interpolatad_signal
         self._v_amps = v_amps
-        self._v_amps_inverse_warped = self._interpolatad_singal.inverse_warp(
+        self._v_amps_inverse_warped = self._interpolatad_signal.inverse_warp(
             v_amps)
         self._rho = rho
 
@@ -85,7 +85,7 @@ class CostFunction:
         return np.abs(x[1:] - x[:-1]).mean()
 
     def __call__(self, z_amps):
-        diff = self._interpolatad_singal.forward_warp(z_amps) - self._v_amps
+        diff = self._interpolatad_signal.forward_warp(z_amps) - self._v_amps
         data_fidelity = 0.5 * self._rho * (diff**2).sum()
         return data_fidelity + self.prior(z_amps)
 
@@ -100,12 +100,10 @@ class CostFunction:
 #-----------------------------------------------------------------
 
 rhos = [3e-2, 1e-1, 3e-1, 1e0, 3e0]
-tol = 1e-6
 
 np.random.seed(1)
 
-#amps = gaussian_filter(np.pad(2 * np.random.rand(32) - 1, 6), 1.75)
-amps = gaussian_filter(np.pad(2 * np.random.rand(64) - 1, 6), 1.75)
+amps = gaussian_filter(np.pad(2 * np.random.rand(32) - 1, 6), 1.75)
 amps[0] = 0
 amps[-1] = 0
 
@@ -132,9 +130,9 @@ z2 = np.zeros((len(rhos), amps.shape[0]))
 
 for i, rho in enumerate(rhos):
     print(i, rho)
-    cost = CostFunction(signal, amps_fwd, rho=rho)
-    res1 = minimize(cost.__call__, z0, tol=tol)
-    res2 = minimize(cost.__call2__, z0, tol=tol)
+    cost = CostFunctionSubProblem2(signal, amps_fwd, rho=rho)
+    res1 = minimize(cost.__call__, z0)
+    res2 = minimize(cost.__call2__, z0)
     z1[i, :] = res1.x
     z2[i, :] = res2.x
 
