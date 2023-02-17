@@ -241,7 +241,7 @@ class MultiChannelStackedNonCartesianMRAcquisitionModel(LinearOperator):
             # perform a 1D FFT along the "stack axis"
             tmp = self.xp.fft.fftshift(self.xp.fft.fftn(self.xp.fft.fftshift(
                 self.coil_sensitivities[i, ...] * x, axes=0),
-                                                        axes=[0]),
+                                                        axes=[0], norm='ortho'),
                                        axes=0)
 
             # series of 2D NUFFTs
@@ -266,12 +266,10 @@ class MultiChannelStackedNonCartesianMRAcquisitionModel(LinearOperator):
             x += self.xp.conj(
                 self.coil_sensitivities[i, ...]) * self.xp.fft.ifftshift(
                     self.xp.fft.ifftn(self.xp.fft.ifftshift(tmp, axes=0),
-                                      axes=[0]),
+                                      axes=[0], norm = 'ortho'),
                     axes=0)
 
-        # when using numpy's fftn with the default normalization
-        # we have to multiply the inverse with input_shape[0] to get the adjoint
-        x *= (self.adjoint_scaling_factor * self.input_shape[0])
+        x *= self.adjoint_scaling_factor
 
         if self._scaling_factor != 1:
             x *= self.scaling_factor
