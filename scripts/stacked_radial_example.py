@@ -9,14 +9,16 @@ from mrrecon.mroperators import MultiChannelStackedNonCartesianMRAcquisitionMode
 from mrrecon.kspace_trajectories import radial_2d_golden_angle
 from mrrecon.functionals import SquaredL2Norm
 
+import pymirc.viewer as pv
+
 # the reconstruction shape, can be (1,X,X) for 2D tests
-recon_shape = (4, 256, 256)
+recon_shape = (16, 256, 256)
 # maximum number of conjugate gradient iterations
 num_iterations = 50
 # radial undersampling factor
-undersampling_factor = 8
+undersampling_factor = 16
 # weight of quadratic prior
-quadratic_prior_weight = 1e-4
+quadratic_prior_weight = 0  # 1e-4
 # noise level
 noise_level = 0
 # gtol parameter for fmin_cg (stops when norm of graient is below gtol)
@@ -36,19 +38,18 @@ print('loading image')
 x = np.load('../data/xcat_vol.npz')['arr_0'].reshape(1024, 1024,
                                                      1024).astype(np.float32)
 
-# normalize x to have max 1
-x /= x.max()
-
 # swap axes to have sagittal axis in front
 x = np.swapaxes(x, 0, 2)
 
-# select recon_shape subvolume from total volume
-start0 = x.shape[0] // 2 - recon_shape[0] // 2
-end0 = start0 + recon_shape[0]
+# downsample the volume to 256^3
+x = x[0::4, :, :] + x[1::4, :, :] + x[2::4, :, :] + x[3::4, :, :]
+x = x[:, 0::4, :] + x[:, 1::4, :] + x[:, 2::4, :] + x[:, 3::4, :]
+x = x[:, :, 0::4] + x[:, :, 1::4] + x[:, :, 2::4] + x[:, :, 3::4]
 
-x = x[start0:end0, ::(x.shape[1] // recon_shape[1]), ::(x.shape[2] //
-                                                        recon_shape[2])]
+# normalize x to have max 1
+x /= x.max()
 
+# cast to complex
 x = x.astype(np.complex64)
 
 #-----------------------------------------------------------------------------
@@ -63,20 +64,38 @@ print('setting up operators')
 
 kspace_points = radial_2d_golden_angle(num_spokes, recon_shape[-1])
 
+sens = np.expand_dims(np.ones(x.shape).astype(x.dtype), 0)
+
+data_operator = MultiChannelStackedNonCartesianMRAcquisitionModel(
+    x.shape, sens, kspace_points, device_number=0)
+
+# generate "oversampled" data on a has 256 k-space points in the "axial direction"
+oversampled_data = data_operator.forward(x)
+
+# select only the "inner" part of the kspace data in the "axial direction"
+oversampling_factor = x.shape[0] // recon_shape[0]
+
+start0 = x.shape[0] * (oversampling_factor - 1) // (2 * oversampling_factor)
+end0 = x.shape[0] * (oversampling_factor + 1) // (2 * oversampling_factor)
+
+data = oversampled_data[:, start0:end0, :]
+
+# we have to divide by the sqrt of the oversampling factor because we use
+# norm = 'ortho' in the fft
+data /= np.sqrt(oversampling_factor)
+
+if noise_level > 0:
+    data += noise_level * (np.random.rand(*data.shape) +
+                           1j * np.random.rand(*data.shape))
+
+# setup a new operator that corresponds to the downsampled (inner part of the) data
 sens = np.expand_dims(np.ones(recon_shape).astype(x.dtype), 0)
 
 data_operator = MultiChannelStackedNonCartesianMRAcquisitionModel(
     recon_shape, sens, kspace_points, device_number=0)
 
-# set global post scale of data operator such that data_operator.norm()
-# is approx 1 (optional but useful e.g. PDHG)
-data_operator.post_scale = 1 / 10000.
-
-data = data_operator.forward(x)
-
-if noise_level > 0:
-    data += noise_level * (np.random.rand(*data.shape) +
-                           1j * np.random.rand(*data.shape))
+# estimate the norm of the forward operator
+op_norm = data_operator.norm(num_iter=5)
 
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
@@ -136,7 +155,8 @@ else:
 #-----------------------------------------------------------------------------
 print('running the recon')
 
-x0 = np.zeros(2 * x.size, dtype=x.real.dtype)
+x0 = data_operator.ravel_pseudo_complex(
+    data_operator.adjoint(data) / (op_norm**2))
 
 res = fmin_cg(loss,
               x0,
@@ -150,7 +170,8 @@ recon = data_operator.unravel_pseudo_complex(res[0])
 loss_values = [loss(r) for r in res[1]]
 
 # unravel all the recon at every iteration
-intermediate_recons = [data_operator.unravel_pseudo_complex(r) for r in res[1]]
+intermediate_recons = np.array(
+    [np.abs(data_operator.unravel_pseudo_complex(r)) for r in res[1]])
 
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
@@ -158,19 +179,14 @@ intermediate_recons = [data_operator.unravel_pseudo_complex(r) for r in res[1]]
 #-----------------------------------------------------------------------------
 #-----------------------------------------------------------------------------
 
-ims = dict(cmap=plt.cm.Greys_r, origin='lower', vmin=0, vmax=x.real.max())
-fig, ax = plt.subplots(2, 3, figsize=(3 * 4, 2 * 4), sharex=True, sharey=True)
-ax[0, 0].imshow(np.abs(x[0, ...]).T, **ims)
-ax[1, 0].imshow(np.abs(recon[0, ...]).T, **ims)
-ax[0, 0].set_title('slice 0')
-ax[0, 1].imshow(np.abs(x[x.shape[0] // 2, ...]).T, **ims)
-ax[1, 1].imshow(np.abs(recon[recon_shape[0] // 2, ...]).T, **ims)
-ax[0, 1].set_title(f'slice {recon_shape[0] // 2}')
-ax[0, 2].imshow(np.abs(x[-1, ...]).T, **ims)
-ax[1, 2].imshow(np.abs(recon[-1, ...]).T, **ims)
-ax[0, 2].set_title(f'slice {recon_shape[0]-1}')
-fig.tight_layout()
-fig.show()
+# "upsample" the recon to the original 256x256x256 grid for visualization
+tmp = oversampling_factor // 2
+upsampled_recon = np.pad(
+    np.repeat(np.abs(recon), oversampling_factor, axis=0)[tmp:, :, :],
+    ((0, tmp), (0, 0), (0, 0)))
+
+ims = dict(cmap=plt.cm.Greys_r, vmin=0, vmax=1.2 * x.real.max())
+vi = pv.ThreeAxisViewer([upsampled_recon, x.real], imshow_kwargs=ims)
 
 # plot the cost function
 fig2, ax2 = plt.subplots()
@@ -181,25 +197,3 @@ ax2.set_title('cost function (loglog plot)')
 ax2.grid(ls=':')
 fig2.tight_layout()
 fig2.show()
-
-# show a few intermetiate reconstructions to visualize convergence
-num_intermed = 21
-num_rows = int(np.sqrt(num_intermed * 9 / 16))
-num_cols = int(np.ceil(num_intermed / num_rows))
-fig3, ax3 = plt.subplots(num_rows,
-                         num_cols,
-                         figsize=(num_cols * 2.7, num_rows * 2.7),
-                         sharex=True,
-                         sharey=True)
-sl = x.shape[0] // 2
-its = np.arange(num_intermed) * (len(intermediate_recons) // num_intermed)
-its[:4] = its[:4]
-its[-1] = len(intermediate_recons) - 1
-for i, it in enumerate(its):
-    ax3.ravel()[i].imshow(np.abs(intermediate_recons[it][sl, ...]).T, **ims)
-    ax3.ravel()[i].set_title(f'it {it}, loss {loss_values[it]:.2e}',
-                             fontsize='small')
-for axx in ax3.ravel():
-    axx.set_axis_off()
-fig3.tight_layout()
-fig3.show()
