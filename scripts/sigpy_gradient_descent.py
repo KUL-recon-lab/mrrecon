@@ -35,20 +35,20 @@ proxg = sigpy.prox.BoxConstraint(ishape, 0.05, 0.8)
 
 x0 = cp.random.rand(*ishape)
 
-# estimate the max eigenvalue of the Operator which is the Lipschitz of the gradient
+# estimate the max eigenvalue of A.H*A which is the Lipschitz of the gradient
 app = sigpy.app.MaxEig(A.H * A)
-gradL = np.sqrt(app.run())
+gradLip = app.run()
 
-# TODO understand why 1/gradL is not working
 alg = sigpy.alg.GradientMethod(mygrad,
                                x0,
-                               0.1 / gradL,
+                               1. / gradLip,
                                proxg=proxg,
                                accelerate=False,
-                               max_iter=1000,
+                               max_iter=500,
                                tol=0)
 
 while not alg.done():
-    print(alg.iter)
-    print(alg.x.ravel())
     alg.update()
+
+print(x.ravel())
+print(alg.x.ravel())
