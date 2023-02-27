@@ -7,7 +7,12 @@ import pymirc.viewer as pv
 
 ishape = (64, 64, 64)
 num_k_space_points = np.prod(ishape) // 4
-noise_level = 3e-2
+noise_level = 3e-3
+max_num_iter = 1000
+sigma = 1e-1
+
+regularization_operator = 'projected_gradient'  # projected_gradient or gradient
+regularization_norm = 'L2'  # L1 or L2
 beta = 1e0
 
 #--------------------------------------------------------------------------
@@ -57,6 +62,20 @@ P = I - (M.H * S.H * S * M)
 # projected gradient operator
 PG = P * G
 
+if regularization_operator == 'projected_gradient':
+    R = PG
+elif regularization_operator == 'gradient':
+    R = G
+else:
+    raise ValueError('unknown regularization operator')
+
+if regularization_norm == 'L2':
+    proxg = sigpy.prox.L2Reg(R.oshape, lamda=beta)
+elif regularization_norm == 'L1':
+    proxg = sigpy.prox.L1Reg(R.oshape, lamda=beta)
+else:
+    raise ValueError('unknown regularization norm')
+
 #--------------------------------------------------------------------------
 
 # simulate noise-free data
@@ -66,10 +85,15 @@ y = A.apply(x)
 y += noise_level * cp.abs(
     y.max()) * (cp.random.randn(*y.shape) + 1j * cp.random.randn(*y.shape))
 
-proxg = sigpy.prox.L1Reg(G.oshape, lamda=beta)  # define proximal operator
+alg = sigpy.app.LinearLeastSquares(A,
+                                   y,
+                                   x=A.H(y),
+                                   G=R,
+                                   proxg=proxg,
+                                   sigma=sigma,
+                                   max_iter=max_num_iter)
 
-alg = sigpy.app.LinearLeastSquares(A, y, G=PG, proxg=proxg, max_iter=500)
-#alg = sigpy.app.LinearLeastSquares(A, y, G=G, proxg=proxg, max_iter=500)
+print(alg.sigma, alg.tau, alg.sigma * alg.tau)
 
 x_hat = alg.run()
 
