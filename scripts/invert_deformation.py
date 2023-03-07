@@ -84,17 +84,17 @@ class TestDisplacement(ForwardDisplacement):
 
 if __name__ == '__main__':
 
-    x = np.linspace(0, 2, 100)
+    x = np.linspace(-1, 1, 100)
 
-    #u = LinearDisplacement(0, 0.8)
-    #u = QuadraticDisplacement(0, 0.3, 0.2)
-    u = TestDisplacement(a=1., b=1., c=-0.5)
+    u = LinearDisplacement(-2, 0.5)
+    #u = QuadraticDisplacement(0, 0, -0.2)
+    #u = TestDisplacement(a=1., b=1., c=-0.5)
 
     fig, ax = plt.subplots(1, 3, figsize=(12, 4))
     ax[0].plot(x, u(x))
     ax[1].plot(x, u(x) + x)
-    ax[2].plot(x, x + u(x))  # plot(x,f)
-    for n in [1, 3, 10, 100, 1000]:
-        ax[2].plot(u.fixpoint_inverse(x, n) + x, x)  # plot(g,x)
+    ax[2].plot(x, x + u(x), lw=3)  # plot(x,f)
+    for n in [1, 3, 10]:
+        ax[2].plot(u.fixpoint_inverse(x, n) + x, x, ':')  # plot(g,x)
     fig.tight_layout()
     fig.show()
