@@ -1,7 +1,12 @@
-"""demo script to show how to setup a stack of radial stars operator in sigpy"""
+"""demo script to show how to solve ADMM subproblem (1) using sigpy"""
+
+#TODO:
+# use several 3D images (corresponding to different gates) instead of single 3D image
+# -> should be possible using the "diag" operator (as in the stack of stars operator)
 
 import numpy as np
 import sigpy
+import matplotlib.pyplot as plt
 
 
 def stacked_nufft_operator(img_shape: tuple, coords: np.ndarray):
@@ -34,8 +39,10 @@ def stacked_nufft_operator(img_shape: tuple, coords: np.ndarray):
     rs_out = sigpy.linop.Reshape((1, ) + tuple(nufft_op.oshape),
                                  nufft_op.oshape)
 
+    # setup a list of "n" 2D NUFFT operators
     ops = img_shape[0] * [rs_out * nufft_op * rs_in]
 
+    # apply 2D NUFFTs to all "slices" using the sigpy Diag operator
     return sigpy.linop.Diag(ops, iaxis=0, oaxis=0) * ft0_op
 
 
@@ -56,11 +63,16 @@ def golden_angle_2d_readout(kmax, num_spokes, num_points):
 if __name__ == '__main__':
     np.random.seed(1)
 
-    img_shape = (32, 128, 128)
+    img_shape = (4, 8, 8)
     num_spokes = 16
-    num_points = 256
+    num_points = 32
 
     trans_fov_cm = 40.
+
+    # setup a random "bias" term for the quadratic penalty
+    b = np.random.rand(*img_shape)
+    # weight of the quadratic penalty term
+    lam = 4.2
 
     #-----------------------------------------------------
     # max k value according to Nyquist
@@ -68,7 +80,7 @@ if __name__ == '__main__':
 
     # generate a random test image
     # for faster execution on a GPU change this to a cupy array
-    x = np.random.rand(*img_shape)
+    gt_img = np.random.rand(*img_shape) + 1j * np.random.rand(*img_shape)
 
     # setup a 2D coordinates for the NUFFTs
     # sigpy needs the coordinates without units
@@ -78,10 +90,35 @@ if __name__ == '__main__':
     kspace_coords_2d = golden_angle_2d_readout(kmax_1_cm * trans_fov_cm,
                                                num_spokes, num_points)
 
-    #import matplotlib.pyplot as plt
-    #plt.ion()
-    #plt.plot(kspace_coords_2d[..., 0].T, kspace_coords_2d[..., 1].T)
-
     fwd_op = stacked_nufft_operator(img_shape, kspace_coords_2d.reshape(-1, 2))
 
-    x_fwd = fwd_op(x)
+    # generate (noiseless) data
+    data = fwd_op(gt_img)
+
+    # setup algorithm to solve ADMM subproblem (1)
+    # sigpy's LinearLeastSquares solves:
+    # min_x 0.5 * || fwd_op * x - data ||_2^2 + 0.5 * lambda * || x - z ||_2^2
+    # https://sigpy.readthedocs.io/en/latest/generated/sigpy.app.LinearLeastSquares.html#sigpy.app.LinearLeastSquares
+    # for this problem, sigpy uses conjugate gradient
+    x0 = np.zeros_like(gt_img)
+
+    alg = sigpy.app.LinearLeastSquares(fwd_op,
+                                       data,
+                                       x=x0,
+                                       z=b,
+                                       lamda=lam,
+                                       max_iter=50,
+                                       save_objective_values=True)
+
+    # run the algorithm
+    res = alg.run()
+
+    #cost = lambda x: 0.5 * (np.abs(fwd_op(x) - data)**2).sum() + 0.5 * lam * (
+    #    np.abs(x - b)**2).sum()
+
+    fig, ax = plt.subplots(1, 2, figsize=(8, 4))
+    ax[0].plot(kspace_coords_2d[..., 0].T, kspace_coords_2d[..., 1].T)
+    ax[1].semilogy(alg.objective_values)
+    ax[1].set_ylim(0, max(alg.objective_values[1:]))
+    fig.tight_layout()
+    fig.show()
