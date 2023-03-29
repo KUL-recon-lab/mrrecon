@@ -63,14 +63,12 @@ def golden_angle_2d_readout(kmax, num_spokes, num_points):
 if __name__ == '__main__':
     np.random.seed(1)
 
-    img_shape = (4, 8, 8)
+    img_shape = (6, 32, 32)
     num_spokes = 16
     num_points = 32
 
     trans_fov_cm = 40.
 
-    # setup a random "bias" term for the quadratic penalty
-    b = np.random.rand(*img_shape)
     # weight of the quadratic penalty term
     lam = 4.2
 
@@ -78,9 +76,17 @@ if __name__ == '__main__':
     # max k value according to Nyquist
     kmax_1_cm = 1. / (2 * (trans_fov_cm / img_shape[1]))
 
-    # generate a random test image
+    # generate 3 random test images
     # for faster execution on a GPU change this to a cupy array
-    gt_img = np.random.rand(*img_shape) + 1j * np.random.rand(*img_shape)
+    img1 = np.random.rand(*img_shape) + 1j * np.random.rand(*img_shape)
+    img2 = np.random.rand(*img_shape) + 1j * np.random.rand(*img_shape)
+    img3 = np.random.rand(*img_shape) + 1j * np.random.rand(*img_shape)
+
+    # stack all 3D images into a 4D array
+    img_4d = np.array([img1, img2, img3])
+
+    # setup a random 4D "bias" term for the quadratic penalty
+    b_4d = np.random.rand(*img_4d.shape)
 
     # setup a 2D coordinates for the NUFFTs
     # sigpy needs the coordinates without units
@@ -90,22 +96,31 @@ if __name__ == '__main__':
     kspace_coords_2d = golden_angle_2d_readout(kmax_1_cm * trans_fov_cm,
                                                num_spokes, num_points)
 
-    fwd_op = stacked_nufft_operator(img_shape, kspace_coords_2d.reshape(-1, 2))
+    # setup the operator that acts on a single 3D image
+    fwd_op_3d = stacked_nufft_operator(img_shape,
+                                       kspace_coords_2d.reshape(-1, 2))
+
+    # setup the operator that applies the 3d operator to a stack of 3 images
+    rs_in = sigpy.linop.Reshape(img_shape, (1, ) + img_shape)
+    rs_out = sigpy.linop.Reshape((1, ) + tuple(fwd_op_3d.oshape),
+                                 fwd_op_3d.oshape)
+    ops = img_4d.shape[0] * [rs_out * fwd_op_3d * rs_in]
+    fwd_op_4d = sigpy.linop.Diag(ops, iaxis=0, oaxis=0)
 
     # generate (noiseless) data
-    data = fwd_op(gt_img)
+    data_4d = fwd_op_4d(img_4d)
 
     # setup algorithm to solve ADMM subproblem (1)
     # sigpy's LinearLeastSquares solves:
     # min_x 0.5 * || fwd_op * x - data ||_2^2 + 0.5 * lambda * || x - z ||_2^2
     # https://sigpy.readthedocs.io/en/latest/generated/sigpy.app.LinearLeastSquares.html#sigpy.app.LinearLeastSquares
     # for this problem, sigpy uses conjugate gradient
-    x0 = np.zeros_like(gt_img)
+    x0 = np.zeros_like(img_4d)
 
-    alg = sigpy.app.LinearLeastSquares(fwd_op,
-                                       data,
+    alg = sigpy.app.LinearLeastSquares(fwd_op_4d,
+                                       data_4d,
                                        x=x0,
-                                       z=b,
+                                       z=b_4d,
                                        lamda=lam,
                                        max_iter=50,
                                        save_objective_values=True)
@@ -113,8 +128,11 @@ if __name__ == '__main__':
     # run the algorithm
     res = alg.run()
 
-    #cost = lambda x: 0.5 * (np.abs(fwd_op(x) - data)**2).sum() + 0.5 * lam * (
-    #    np.abs(x - b)**2).sum()
+    # setup the cost function manually to double check that we optimize what we want
+    cost = lambda x: 0.5 * (np.abs(fwd_op_4d(x) - data_4d)**2).sum(
+    ) + 0.5 * lam * (np.abs(x - b_4d)**2).sum()
+
+    assert (np.isclose(cost(res), alg.objective_values[-1]))
 
     fig, ax = plt.subplots(1, 2, figsize=(8, 4))
     ax[0].plot(kspace_coords_2d[..., 0].T, kspace_coords_2d[..., 1].T)
