@@ -17,34 +17,38 @@ n0 = 64
 n1 = 64
 img_shape = (n0, n1)
 
-noise_level = 3e-1
+noise_level = 2e-1
 
 rho = 1e0
-beta = 3e0
+beta = 1e0
 
-num_iter = 250
+num_iter = 30
 
-max_num_iter_pdhg = 100
+max_num_iter_subproblem_2 = 50
 sigma_pdhg = 1.
 
 #--------------------------------------------------------------------
 
 # setup the "motion operators"
-S1 = sigpy.linop.Circshift(img_shape, (n0 // 8, ), axes=(0, ))
+S1 = sigpy.linop.Identity(
+    img_shape)  # we treat the first gate as reference (no displacement)
 S2 = sigpy.linop.Circshift(img_shape, (-n0 // 8, ), axes=(1, ))
+S3 = sigpy.linop.Circshift(img_shape, (n0 // 8, ), axes=(0, ))
 
 # setup the Fourier operators
 F1 = sigpy.linop.FFT(img_shape, center=True)
 F2 = sigpy.linop.FFT(img_shape, center=True)
+F3 = sigpy.linop.FFT(img_shape, center=True)
 
 # setup the ground truth image
 gt = cp.zeros(img_shape, dtype=np.complex64)
 gt[(1 * n0 // 4):(3 * n0 // 4), (1 * n1 // 4):(3 * n1 // 4)] = 1 - 1j
-gt[(3 * n0 // 8):(5 * n0 // 8), (3 * n1 // 5):(3 * n1 // 8)] = -0.5 + 0.5j
+gt[(7 * n0 // 16):(9 * n0 // 16), (7 * n1 // 16):(9 * n1 // 16)] = 0.5 - 0.7j
 
 # simulate the data
 d1 = (F1 * S1)(gt)
 d2 = (F2 * S2)(gt)
+d3 = (F3 * S3)(gt)
 
 # add noise to the data
 d1 += noise_level * cp.random.randn(*d1.shape)
@@ -53,24 +57,70 @@ d1 += 1j * noise_level * cp.random.randn(*d1.shape)
 d2 += noise_level * cp.random.randn(*d2.shape)
 d2 += 1j * noise_level * cp.random.randn(*d2.shape)
 
+d3 += noise_level * cp.random.randn(*d3.shape)
+d3 += 1j * noise_level * cp.random.randn(*d3.shape)
+
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
-# ADMM
+# independent recons to init. z's and estimate intial motion fields
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
 
 # gradient operator
 G = (1 / np.sqrt(8)) * sigpy.linop.Gradient(img_shape)
 
+# prox for TV prior
+proxg_ind = sigpy.prox.L1Reg(G.oshape, beta / 3)
+
+alg01 = sigpy.app.LinearLeastSquares(F1,
+                                     d1,
+                                     G=G,
+                                     proxg=proxg_ind,
+                                     max_iter=500,
+                                     sigma=sigma_pdhg)
+ind_recon1 = alg01.run()
+
+alg02 = sigpy.app.LinearLeastSquares(F2,
+                                     d2,
+                                     G=G,
+                                     proxg=proxg_ind,
+                                     max_iter=500,
+                                     sigma=sigma_pdhg)
+ind_recon2 = alg02.run()
+
+alg03 = sigpy.app.LinearLeastSquares(F3,
+                                     d3,
+                                     G=G,
+                                     proxg=proxg_ind,
+                                     max_iter=500,
+                                     sigma=sigma_pdhg)
+ind_recon3 = alg03.run()
+
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+# initial estimate of motion fields (operators)
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+
+# skipped for now
+
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+# ADMM
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+
 # prox for subproblem 2 - note extra (1/rho) which is needed for subproblem 2
 proxg2 = sigpy.prox.L1Reg(G.oshape, beta / rho)
 
 # initialize all variables
-lam = cp.zeros_like(gt)
-z1 = cp.zeros_like(gt)
-z2 = cp.zeros_like(gt)
+lam = ind_recon1.copy()
+z1 = ind_recon1.copy()
+z2 = ind_recon2.copy()
+z3 = ind_recon3.copy()
 u1 = cp.zeros_like(gt)
 u2 = cp.zeros_like(gt)
+u3 = cp.zeros_like(gt)
 
 cost = np.zeros(num_iter)
 
@@ -93,11 +143,22 @@ for i in range(num_iter):
                                          z=(S2(lam) - u2))
     z2 = alg12.run()
 
+    alg13 = sigpy.app.LinearLeastSquares(F3,
+                                         d3,
+                                         x=z3,
+                                         lamda=rho,
+                                         z=(S3(lam) - u3))
+    z3 = alg13.run()
+
     ###################################################################
     # subproblem (2) - optimize lamda
     ###################################################################
-    S = sigpy.linop.Vstack([S1, S2])
-    y = cp.concatenate([u1.ravel() + z1.ravel(), u2.ravel() + z2.ravel()])
+    S = sigpy.linop.Vstack([S1, S2, S3])
+    y = cp.concatenate([
+        u1.ravel() + z1.ravel(),
+        u2.ravel() + z2.ravel(),
+        u3.ravel() + z3.ravel()
+    ])
 
     # we could call LinearLeastSquares directly, but we will use call the
     # PHDG directly which allows us to store the dual variable of PDHG
@@ -130,24 +191,41 @@ for i in range(num_iter):
                                               tau=1 / (max_eig * sigma_pdhg),
                                               sigma=sigma_pdhg)
 
-    for _ in range(max_num_iter_pdhg):
+    for _ in range(max_num_iter_subproblem_2):
         alg2.update()
 
     lam = alg2.x
 
+    ###################################################################
+    # update of displacement fields (motion operators) based on z1, z2
+    ###################################################################
+
+    # skipped for now
+
+    ###################################################################
+    # update of dual variables
+    ###################################################################
+
     # update of dual variables
     u1 = u1 + z1 - S1(lam)
     u2 = u2 + z2 - S2(lam)
+    u3 = u3 + z3 - S3(lam)
+
+    ###################################################################
+    # evaluation of cost function
+    ###################################################################
 
     # evaluate the cost function
     e1 = F1(S1(lam)) - d1
     fid1 = float(0.5 * (e1.conj() * e1).sum().real)
     e2 = F2(S2(lam)) - d2
     fid2 = float(0.5 * (e2.conj() * e2).sum().real)
+    e3 = F3(S3(lam)) - d3
+    fid3 = float(0.5 * (e3.conj() * e3).sum().real)
 
     prior = float(G(lam).real.sum() + G(lam).imag.sum())
 
-    cost[i] = fid1 + fid2 + beta * prior
+    cost[i] = fid1 + fid2 + fid3 + beta * prior
 
 #---------------------------------------------------------------------------
 #---------------------------------------------------------------------------
@@ -157,7 +235,7 @@ for i in range(num_iter):
 
 ims = dict(vmin=-1, vmax=1, cmap='gray')
 
-fig, ax = plt.subplots(2, 9, figsize=(9 * 2, 2 * 2))
+fig, ax = plt.subplots(2, 8, figsize=(8 * 2, 2 * 2))
 ax[0, 0].imshow(cp.asnumpy(gt.real), **ims)
 ax[0, 0].set_title('gt real')
 ax[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
@@ -174,26 +252,23 @@ ax[0, 3].imshow(cp.asnumpy(u2.real), **ims)
 ax[0, 3].set_title('u2 real')
 ax[1, 3].imshow(cp.asnumpy(u2.imag), **ims)
 ax[1, 3].set_title('u2 imag')
-ax[0, 4].imshow(cp.asnumpy(z1.real), **ims)
-ax[0, 4].set_title('z1 real')
-ax[1, 4].imshow(cp.asnumpy(z1.imag), **ims)
-ax[1, 4].set_title('z1 imag')
-ax[0, 5].imshow(cp.asnumpy(z2.real), **ims)
-ax[0, 5].set_title('z2 real')
-ax[1, 5].imshow(cp.asnumpy(z2.imag), **ims)
-ax[1, 5].set_title('z2 imag')
-ax[0, 6].imshow(cp.asnumpy(rho * u1.real), **ims)
-ax[0, 6].set_title('rho*u1 real')
-ax[1, 6].imshow(cp.asnumpy(rho * u1.imag), **ims)
-ax[1, 6].set_title('rho*u1 imag')
-ax[0, 7].imshow(cp.asnumpy(u1.real + z1.real), **ims)
-ax[0, 7].set_title('u1+z1 real')
-ax[1, 7].imshow(cp.asnumpy(u1.imag + z1.real), **ims)
-ax[1, 7].set_title('u1+z1 imag')
-ax[0, 8].imshow(cp.asnumpy(u2.real + z2.real), **ims)
-ax[0, 8].set_title('u2+z2 real')
-ax[1, 8].imshow(cp.asnumpy(u2.imag + z2.real), **ims)
-ax[1, 8].set_title('u2+z2 imag')
+ax[0, 4].imshow(cp.asnumpy(u3.real), **ims)
+ax[0, 4].set_title('u3 real')
+ax[1, 4].imshow(cp.asnumpy(u3.imag), **ims)
+ax[1, 4].set_title('u3 imag')
+
+ax[0, 5].imshow(cp.asnumpy(z1.real), **ims)
+ax[0, 5].set_title('z1 real')
+ax[1, 5].imshow(cp.asnumpy(z1.imag), **ims)
+ax[1, 5].set_title('z1 imag')
+ax[0, 6].imshow(cp.asnumpy(z2.real), **ims)
+ax[0, 6].set_title('z2 real')
+ax[1, 6].imshow(cp.asnumpy(z2.imag), **ims)
+ax[1, 6].set_title('z2 imag')
+ax[0, 7].imshow(cp.asnumpy(z3.real), **ims)
+ax[0, 7].set_title('z3 real')
+ax[1, 7].imshow(cp.asnumpy(z3.imag), **ims)
+ax[1, 7].set_title('z3 imag')
 
 for axx in ax.ravel():
     axx.set_axis_off()
@@ -205,3 +280,31 @@ fig2, ax2 = plt.subplots()
 ax2.plot(cost)
 fig2.tight_layout()
 fig2.show()
+
+fig3, ax3 = plt.subplots(2, 5, figsize=(5 * 2, 2 * 2))
+ax3[0, 0].imshow(cp.asnumpy(gt.real), **ims)
+ax3[0, 0].set_title('gt real')
+ax3[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
+ax3[1, 0].set_title('gt imag')
+ax3[0, 1].imshow(cp.asnumpy(lam.real), **ims)
+ax3[0, 1].set_title('lambda real')
+ax3[1, 1].imshow(cp.asnumpy(lam.imag), **ims)
+ax3[1, 1].set_title('lambda imag')
+ax3[0, 2].imshow(cp.asnumpy(ind_recon1.real), **ims)
+ax3[0, 2].set_title('ind recon 1 real')
+ax3[1, 2].imshow(cp.asnumpy(ind_recon1.imag), **ims)
+ax3[1, 2].set_title('ind recon 1 imag')
+ax3[0, 3].imshow(cp.asnumpy(ind_recon2.real), **ims)
+ax3[0, 3].set_title('ind recon 2 real')
+ax3[1, 3].imshow(cp.asnumpy(ind_recon2.imag), **ims)
+ax3[1, 3].set_title('ind recon 2 imag')
+ax3[0, 4].imshow(cp.asnumpy(ind_recon3.real), **ims)
+ax3[0, 4].set_title('ind recon 3 real')
+ax3[1, 4].imshow(cp.asnumpy(ind_recon3.imag), **ims)
+ax3[1, 4].set_title('ind recon 3 imag')
+
+for axx in ax3.ravel():
+    axx.set_axis_off()
+
+fig3.tight_layout()
+fig3.show()
