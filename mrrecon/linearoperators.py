@@ -1,4 +1,6 @@
 """generic linear operators related to imaging problems"""
+from __future__ import annotations
+
 import abc
 import types
 import numpy as np
