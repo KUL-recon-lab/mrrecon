@@ -8,42 +8,89 @@
 
 import numpy as np
 import cupy as cp
+import cupy.typing as cpt
 import matplotlib.pyplot as plt
 
 import sigpy
 from copy import deepcopy
 
-n0 = 64
-n1 = 64
-img_shape = (n0, n1)
 
-noise_level = 2e-1
+def golden_angle_2d_readout(kmax: float, num_spokes: int,
+                            num_points: int) -> cpt.NDArray:
+    """2D golden angle kspace trajectory"""
+    tmp = cp.linspace(-kmax, kmax, num_points)
+    k = cp.zeros((num_spokes, num_points, 2))
 
-rho = 1e0
-beta = 1e0
+    ga = cp.pi / ((1 + cp.sqrt(5)) / 2)
 
-num_iter = 30
+    for i in range(num_spokes):
+        phi = (i * ga) % (2 * cp.pi)
+        k[i, :, 0] = tmp * cp.cos(phi)
+        k[i, :, 1] = tmp * cp.sin(phi)
 
-max_num_iter_subproblem_2 = 50
+    return k
+
+
+#-------------------------------------------------------------------
+
+# input parameters
+
+# image size
+n = 256
+
+# total number of k-space spokes distributed over 3 gates
+num_spokes = n // 4
+# number of k-space points per spoke
+num_points = 4 * n
+
+# noise level of data
+noise_level = 1e-2
+
+# rho parameter of ADMM
+rho = 1e-1
+# weight of TV prior for images
+beta = 1e-3
+# number of ADMM iterations
+num_iter = 100
+
+# number of PDHG iterations for ADMM subproblem (2)
+max_num_iter_subproblem_2 = 100
 sigma_pdhg = 1.
 
 #--------------------------------------------------------------------
 
+img_shape = (n, n)
+
 # setup the "motion operators"
 S1 = sigpy.linop.Identity(
     img_shape)  # we treat the first gate as reference (no displacement)
-S2 = sigpy.linop.Circshift(img_shape, (-n0 // 8, ), axes=(1, ))
-S3 = sigpy.linop.Circshift(img_shape, (n0 // 8, ), axes=(0, ))
+S2 = sigpy.linop.Circshift(img_shape, (-n // 8, ), axes=(1, ))
+S3 = sigpy.linop.Circshift(img_shape, (n // 8, ), axes=(0, ))
+
+# setup all k-space trajectories
+all_ks = golden_angle_2d_readout(n // 2, num_spokes, num_points)
+
+# distribute the k-space trajectories to the different gates
+k_gate1 = all_ks[0::3, ...]
+k_gate2 = all_ks[1::3, ...]
+k_gate3 = all_ks[2::3, ...]
 
 # setup the Fourier operators
-F1 = sigpy.linop.FFT(img_shape, center=True)
-F2 = sigpy.linop.FFT(img_shape, center=True)
-F3 = sigpy.linop.FFT(img_shape, center=True)
+F1 = sigpy.linop.NUFFT(img_shape, k_gate1)
+F2 = sigpy.linop.NUFFT(img_shape, k_gate2)
+F3 = sigpy.linop.NUFFT(img_shape, k_gate3)
 
-# setup the ground truth image
-gt = cp.zeros(img_shape, dtype=np.complex64)
-gt[(1 * n0 // 4):(3 * n0 // 4), (1 * n1 // 4):(3 * n1 // 4)] = 1 - 1j
-gt[(7 * n0 // 16):(9 * n0 // 16), (7 * n1 // 16):(9 * n1 // 16)] = 0.5 - 0.7j
+# normalize the Fourier operators such that |F_k| = 1
+max_eig_F1 = sigpy.app.MaxEig(F1.H * F1, dtype=cp.complex64, max_iter=30).run()
+
+F1 = (1 / np.sqrt(max_eig_F1)) * F1
+F2 = (1 / np.sqrt(max_eig_F1)) * F2
+F3 = (1 / np.sqrt(max_eig_F1)) * F3
+
+gt = cp.flip(cp.load('2d_test_mri.npy').T, 0)
+gt /= gt.max()
+gt = gt - 0.5 * 1j * gt
+gt = gt.astype(cp.complex64)
 
 # simulate the data
 d1 = (F1 * S1)(gt)
@@ -66,8 +113,8 @@ d3 += 1j * noise_level * cp.random.randn(*d3.shape)
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
 
-# gradient operator
-G = (1 / np.sqrt(8)) * sigpy.linop.Gradient(img_shape)
+# gradient operator, factor in front makes sure that |G| = 1
+G = (1 / np.sqrt(4 * len(img_shape))) * sigpy.linop.Gradient(img_shape)
 
 # prox for TV prior
 proxg_ind = sigpy.prox.L1Reg(G.oshape, beta / 3)
@@ -233,9 +280,9 @@ for i in range(num_iter):
 #---------------------------------------------------------------------------
 #---------------------------------------------------------------------------
 
-ims = dict(vmin=-1, vmax=1, cmap='gray')
+ims = dict(vmin=-0.5, vmax=0.5, cmap='gray')
 
-fig, ax = plt.subplots(2, 8, figsize=(8 * 2, 2 * 2))
+fig, ax = plt.subplots(2, 8, figsize=(8 * 2, 2 * 2), sharex=True, sharey=True)
 ax[0, 0].imshow(cp.asnumpy(gt.real), **ims)
 ax[0, 0].set_title('gt real')
 ax[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
@@ -281,27 +328,23 @@ ax2.plot(cost)
 fig2.tight_layout()
 fig2.show()
 
-fig3, ax3 = plt.subplots(2, 5, figsize=(5 * 2, 2 * 2))
-ax3[0, 0].imshow(cp.asnumpy(gt.real), **ims)
-ax3[0, 0].set_title('gt real')
-ax3[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
-ax3[1, 0].set_title('gt imag')
-ax3[0, 1].imshow(cp.asnumpy(lam.real), **ims)
-ax3[0, 1].set_title('lambda real')
-ax3[1, 1].imshow(cp.asnumpy(lam.imag), **ims)
-ax3[1, 1].set_title('lambda imag')
-ax3[0, 2].imshow(cp.asnumpy(ind_recon1.real), **ims)
-ax3[0, 2].set_title('ind recon 1 real')
-ax3[1, 2].imshow(cp.asnumpy(ind_recon1.imag), **ims)
-ax3[1, 2].set_title('ind recon 1 imag')
-ax3[0, 3].imshow(cp.asnumpy(ind_recon2.real), **ims)
-ax3[0, 3].set_title('ind recon 2 real')
-ax3[1, 3].imshow(cp.asnumpy(ind_recon2.imag), **ims)
-ax3[1, 3].set_title('ind recon 2 imag')
-ax3[0, 4].imshow(cp.asnumpy(ind_recon3.real), **ims)
-ax3[0, 4].set_title('ind recon 3 real')
-ax3[1, 4].imshow(cp.asnumpy(ind_recon3.imag), **ims)
-ax3[1, 4].set_title('ind recon 3 imag')
+fig3, ax3 = plt.subplots(2,
+                         3,
+                         figsize=(3 * 2, 2 * 2),
+                         sharex=True,
+                         sharey=True)
+ax3[0, 0].imshow(cp.asnumpy(ind_recon1.real), **ims)
+ax3[0, 0].set_title('ind recon 1 real')
+ax3[1, 0].imshow(cp.asnumpy(ind_recon1.imag), **ims)
+ax3[1, 0].set_title('ind recon 1 imag')
+ax3[0, 1].imshow(cp.asnumpy(ind_recon2.real), **ims)
+ax3[0, 1].set_title('ind recon 2 real')
+ax3[1, 1].imshow(cp.asnumpy(ind_recon2.imag), **ims)
+ax3[1, 1].set_title('ind recon 2 imag')
+ax3[0, 2].imshow(cp.asnumpy(ind_recon3.real), **ims)
+ax3[0, 2].set_title('ind recon 3 real')
+ax3[1, 2].imshow(cp.asnumpy(ind_recon3.imag), **ims)
+ax3[1, 2].set_title('ind recon 3 imag')
 
 for axx in ax3.ravel():
     axx.set_axis_off()
