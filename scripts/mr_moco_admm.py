@@ -51,7 +51,7 @@ rho = 1e-1
 # weight of TV prior for images
 beta = 1e-3
 # number of ADMM iterations
-num_iter = 100
+num_iter = 50
 
 # number of PDHG iterations for ADMM subproblem (2)
 max_num_iter_subproblem_2 = 100
@@ -150,6 +150,32 @@ ind_recon3 = alg03.run()
 #--------------------------------------------------------------------
 
 # skipped for now
+
+## simple example on how to use pirt / pyelastix for motion estimation
+#import pirt
+#
+#fixed = cp.asnumpy(cp.abs(ind_recon1))
+#
+#moving2 = cp.asnumpy(cp.abs(ind_recon2))
+#reg21 = pirt.ElastixRegistration(moving2, fixed)
+#reg21.register(1)
+#
+#deform21 = reg21.get_final_deform(0, 1, 'backward')
+#ind_recon2_deformed = deform21.apply_deformation(moving2)
+#
+#moving3 = cp.asnumpy(cp.abs(ind_recon3))
+#reg31 = pirt.ElastixRegistration(moving3, fixed)
+#reg31.register(1)
+#
+#deform31 = reg31.get_final_deform(0, 1, 'backward')
+#ind_recon3_deformed = deform31.apply_deformation(moving3)
+#
+#fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+#ax[0].imshow(fixed)
+#ax[1].imshow(ind_recon2_deformed)
+#ax[2].imshow(ind_recon3_deformed)
+#fig.tight_layout()
+#fig.show()
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -281,41 +307,64 @@ for i in range(num_iter):
 #---------------------------------------------------------------------------
 
 ims = dict(vmin=-0.5, vmax=0.5, cmap='gray')
+ims2 = dict(vmin=0, vmax=0.7, cmap='gray')
 
-fig, ax = plt.subplots(2, 8, figsize=(8 * 2, 2 * 2), sharex=True, sharey=True)
+fig, ax = plt.subplots(3, 8, figsize=(8 * 2, 3 * 2), sharex=True, sharey=True)
 ax[0, 0].imshow(cp.asnumpy(gt.real), **ims)
 ax[0, 0].set_title('gt real')
 ax[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
 ax[1, 0].set_title('gt imag')
+ax[2, 0].imshow(cp.asnumpy(cp.abs(gt)), **ims2)
+ax[2, 0].set_title('gt abs')
+
 ax[0, 1].imshow(cp.asnumpy(lam.real), **ims)
 ax[0, 1].set_title('lambda real')
 ax[1, 1].imshow(cp.asnumpy(lam.imag), **ims)
 ax[1, 1].set_title('lambda imag')
+ax[2, 1].imshow(cp.asnumpy(cp.abs(lam)), **ims2)
+ax[2, 1].set_title('lambda abs')
+
 ax[0, 2].imshow(cp.asnumpy(u1.real), **ims)
 ax[0, 2].set_title('u1 real')
 ax[1, 2].imshow(cp.asnumpy(u1.imag), **ims)
 ax[1, 2].set_title('u1 imag')
+ax[2, 2].imshow(cp.asnumpy(cp.abs(u1)), **ims2)
+ax[2, 2].set_title('u1 abs')
+
 ax[0, 3].imshow(cp.asnumpy(u2.real), **ims)
 ax[0, 3].set_title('u2 real')
 ax[1, 3].imshow(cp.asnumpy(u2.imag), **ims)
 ax[1, 3].set_title('u2 imag')
+ax[2, 3].imshow(cp.asnumpy(cp.abs(u2)), **ims2)
+ax[2, 3].set_title('u2 abs')
+
 ax[0, 4].imshow(cp.asnumpy(u3.real), **ims)
 ax[0, 4].set_title('u3 real')
 ax[1, 4].imshow(cp.asnumpy(u3.imag), **ims)
 ax[1, 4].set_title('u3 imag')
+ax[2, 4].imshow(cp.asnumpy(cp.abs(u3)), **ims2)
+ax[2, 4].set_title('u3 abs')
 
 ax[0, 5].imshow(cp.asnumpy(z1.real), **ims)
 ax[0, 5].set_title('z1 real')
 ax[1, 5].imshow(cp.asnumpy(z1.imag), **ims)
 ax[1, 5].set_title('z1 imag')
+ax[2, 5].imshow(cp.asnumpy(cp.abs(z1)), **ims2)
+ax[2, 5].set_title('z1 abs')
+
 ax[0, 6].imshow(cp.asnumpy(z2.real), **ims)
 ax[0, 6].set_title('z2 real')
 ax[1, 6].imshow(cp.asnumpy(z2.imag), **ims)
 ax[1, 6].set_title('z2 imag')
+ax[2, 6].imshow(cp.asnumpy(cp.abs(z2)), **ims2)
+ax[2, 6].set_title('z2 abs')
+
 ax[0, 7].imshow(cp.asnumpy(z3.real), **ims)
 ax[0, 7].set_title('z3 real')
 ax[1, 7].imshow(cp.asnumpy(z3.imag), **ims)
 ax[1, 7].set_title('z3 imag')
+ax[2, 7].imshow(cp.asnumpy(cp.abs(z3)), **ims2)
+ax[2, 7].set_title('z3 abs')
 
 for axx in ax.ravel():
     axx.set_axis_off()
@@ -328,23 +377,31 @@ ax2.plot(cost)
 fig2.tight_layout()
 fig2.show()
 
-fig3, ax3 = plt.subplots(2,
+fig3, ax3 = plt.subplots(3,
                          3,
-                         figsize=(3 * 2, 2 * 2),
+                         figsize=(3 * 2, 3 * 2),
                          sharex=True,
                          sharey=True)
 ax3[0, 0].imshow(cp.asnumpy(ind_recon1.real), **ims)
 ax3[0, 0].set_title('ind recon 1 real')
 ax3[1, 0].imshow(cp.asnumpy(ind_recon1.imag), **ims)
 ax3[1, 0].set_title('ind recon 1 imag')
+ax3[2, 0].imshow(cp.asnumpy(cp.abs(ind_recon1)), **ims2)
+ax3[2, 0].set_title('ind recon 1 abs')
+
 ax3[0, 1].imshow(cp.asnumpy(ind_recon2.real), **ims)
 ax3[0, 1].set_title('ind recon 2 real')
 ax3[1, 1].imshow(cp.asnumpy(ind_recon2.imag), **ims)
 ax3[1, 1].set_title('ind recon 2 imag')
+ax3[2, 1].imshow(cp.asnumpy(cp.abs(ind_recon2)), **ims2)
+ax3[2, 1].set_title('ind recon 2 abs')
+
 ax3[0, 2].imshow(cp.asnumpy(ind_recon3.real), **ims)
 ax3[0, 2].set_title('ind recon 3 real')
 ax3[1, 2].imshow(cp.asnumpy(ind_recon3.imag), **ims)
 ax3[1, 2].set_title('ind recon 3 imag')
+ax3[2, 2].imshow(cp.asnumpy(cp.abs(ind_recon3)), **ims2)
+ax3[2, 2].set_title('ind recon 3 abs')
 
 for axx in ax3.ravel():
     axx.set_axis_off()
