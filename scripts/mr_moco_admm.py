@@ -35,11 +35,14 @@ def golden_angle_2d_readout(kmax: float, num_spokes: int,
 
 # input parameters
 
+# number of gates
+num_gates = 6
+
 # image size
-n = 256
+n = 256  # has to be 256
 
 # total number of k-space spokes distributed over 3 gates
-num_spokes = n // 4
+num_spokes = n // 5
 # number of k-space points per spoke
 num_points = 4 * n
 
@@ -51,61 +54,76 @@ rho = 1e-1
 # weight of TV prior for images
 beta = 1e-3
 # number of ADMM iterations
-num_iter = 50
+num_iter = 30
 
 # number of PDHG iterations for ADMM subproblem (2)
 max_num_iter_subproblem_2 = 100
 sigma_pdhg = 1.
 
+# random seed
+seed = 1
+np.random.seed(seed)
+
 #--------------------------------------------------------------------
 
 img_shape = (n, n)
 
-# setup the "motion operators"
-S1 = sigpy.linop.Identity(
-    img_shape)  # we treat the first gate as reference (no displacement)
-S2 = sigpy.linop.Circshift(img_shape, (-n // 8, ), axes=(1, ))
-S3 = sigpy.linop.Circshift(img_shape, (n // 8, ), axes=(0, ))
-
-# setup all k-space trajectories
-all_ks = golden_angle_2d_readout(n // 2, num_spokes, num_points)
-
-# distribute the k-space trajectories to the different gates
-k_gate1 = all_ks[0::3, ...]
-k_gate2 = all_ks[1::3, ...]
-k_gate3 = all_ks[2::3, ...]
-
-# setup the Fourier operators
-F1 = sigpy.linop.NUFFT(img_shape, k_gate1)
-F2 = sigpy.linop.NUFFT(img_shape, k_gate2)
-F3 = sigpy.linop.NUFFT(img_shape, k_gate3)
-
-# normalize the Fourier operators such that |F_k| = 1
-max_eig_F1 = sigpy.app.MaxEig(F1.H * F1, dtype=cp.complex64, max_iter=30).run()
-
-F1 = (1 / np.sqrt(max_eig_F1)) * F1
-F2 = (1 / np.sqrt(max_eig_F1)) * F2
-F3 = (1 / np.sqrt(max_eig_F1)) * F3
-
+# setup the ground truth image
 gt = cp.flip(cp.load('2d_test_mri.npy').T, 0)
 gt /= gt.max()
 gt = gt - 0.5 * 1j * gt
 gt = gt.astype(cp.complex64)
 
+# setup all k-space trajectories
+all_ks = golden_angle_2d_readout(n // 2, num_spokes, num_points)
+
+# distribute the k-space trajectories to the different gates
+tmp = np.arange(num_spokes)
+np.random.shuffle(tmp)
+
+# a list for the kspace coordinates per gates (can have different size per gate)
+k_gate = []
+# list of corresponding Fourier operator per gate
+Fs = []
+# list of motion warping operatos
+Ss_true = []
+# list of data
+ds_noise_free = []
+ds = []
+
+for i in range(num_gates):
+    k_gate.append(all_ks[i::num_gates, ...])
+
+    # setup the Fourier operators
+    Fs.append(sigpy.linop.NUFFT(img_shape, k_gate[i]))
+
+    if i == 0:
+        # we treat the first gate as reference (no displacement)
+        Ss_true.append(sigpy.linop.Identity(img_shape))
+    else:
+        shift = int((n // 8) * np.random.randn(1))
+        if i == 1:
+            ax = 0
+        elif i == 2:
+            ax = 1
+        else:
+            ax = np.random.randint(len(img_shape))
+        Ss_true.append(sigpy.linop.Circshift(img_shape, (shift, ),
+                                             axes=(ax, )))
+
+# normalize the Fourier operators such that |F_k| = 1
+max_eig_F = sigpy.app.MaxEig(Fs[0].H * Fs[0], dtype=cp.complex64,
+                             max_iter=30).run()
+
+for i in range(num_gates):
+    Fs[i] = (1 / np.sqrt(max_eig_F)) * Fs[i]
+
 # simulate the data
-d1 = (F1 * S1)(gt)
-d2 = (F2 * S2)(gt)
-d3 = (F3 * S3)(gt)
-
-# add noise to the data
-d1 += noise_level * cp.random.randn(*d1.shape)
-d1 += 1j * noise_level * cp.random.randn(*d1.shape)
-
-d2 += noise_level * cp.random.randn(*d2.shape)
-d2 += 1j * noise_level * cp.random.randn(*d2.shape)
-
-d3 += noise_level * cp.random.randn(*d3.shape)
-d3 += 1j * noise_level * cp.random.randn(*d3.shape)
+for i in range(num_gates):
+    ds_noise_free.append((Fs[i] * Ss_true[i])(gt))
+    ds.append(ds_noise_free[i] + noise_level *
+              (cp.random.randn(*ds_noise_free[i].shape) +
+               1j * cp.random.randn(*ds_noise_free[i].shape)))
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -117,31 +135,18 @@ d3 += 1j * noise_level * cp.random.randn(*d3.shape)
 G = (1 / np.sqrt(4 * len(img_shape))) * sigpy.linop.Gradient(img_shape)
 
 # prox for TV prior
-proxg_ind = sigpy.prox.L1Reg(G.oshape, beta / 3)
+proxg_ind = sigpy.prox.L1Reg(G.oshape, beta / num_gates)
 
-alg01 = sigpy.app.LinearLeastSquares(F1,
-                                     d1,
-                                     G=G,
-                                     proxg=proxg_ind,
-                                     max_iter=500,
-                                     sigma=sigma_pdhg)
-ind_recon1 = alg01.run()
+ind_recons = cp.zeros((num_gates, *img_shape), dtype=cp.complex64)
 
-alg02 = sigpy.app.LinearLeastSquares(F2,
-                                     d2,
-                                     G=G,
-                                     proxg=proxg_ind,
-                                     max_iter=500,
-                                     sigma=sigma_pdhg)
-ind_recon2 = alg02.run()
-
-alg03 = sigpy.app.LinearLeastSquares(F3,
-                                     d3,
-                                     G=G,
-                                     proxg=proxg_ind,
-                                     max_iter=500,
-                                     sigma=sigma_pdhg)
-ind_recon3 = alg03.run()
+for i in range(num_gates):
+    alg01 = sigpy.app.LinearLeastSquares(Fs[i],
+                                         ds[i],
+                                         G=G,
+                                         proxg=proxg_ind,
+                                         max_iter=500,
+                                         sigma=sigma_pdhg)
+    ind_recons[i, ...] = alg01.run()
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -149,33 +154,63 @@ ind_recon3 = alg03.run()
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
 
-# skipped for now
+# skipped for now - simply copy the true motion warping operators
+Ss = deepcopy(Ss_true)
 
-## simple example on how to use pirt / pyelastix for motion estimation
-#import pirt
+#import itk
+#from time import time
 #
-#fixed = cp.asnumpy(cp.abs(ind_recon1))
+#fixed = cp.asnumpy(cp.abs(ind_recons[0, ...]))
+#moving = cp.asnumpy(cp.abs(ind_recons[1, ...]))
 #
-#moving2 = cp.asnumpy(cp.abs(ind_recon2))
-#reg21 = pirt.ElastixRegistration(moving2, fixed)
-#reg21.register(1)
+#resolutions = 3
+#parameter_object = itk.ParameterObject.New()
+#parameter_map_rigid = parameter_object.GetDefaultParameterMap(
+#    'rigid', resolutions)
+#parameter_object.AddParameterMap(parameter_map_rigid)
 #
-#deform21 = reg21.get_final_deform(0, 1, 'backward')
-#ind_recon2_deformed = deform21.apply_deformation(moving2)
+## For the bspline default parameter map, an extra argument can be specified that define the final bspline grid spacing in physical space.
+#parameter_map_bspline = parameter_object.GetDefaultParameterMap(
+#    "bspline", resolutions, 20.0)
+#parameter_object.AddParameterMap(parameter_map_bspline)
 #
-#moving3 = cp.asnumpy(cp.abs(ind_recon3))
-#reg31 = pirt.ElastixRegistration(moving3, fixed)
-#reg31.register(1)
+#t0 = time()
+#registered, parameters = itk.elastix_registration_method(
+#    fixed, moving, parameter_object=parameter_object, log_to_console=False)
+#t1 = time()
+#print('elapsed time regist: ', t1 - t0)
 #
-#deform31 = reg31.get_final_deform(0, 1, 'backward')
-#ind_recon3_deformed = deform31.apply_deformation(moving3)
+## this is how we use the estimated transformation
+#t0 = time()
+#checkerboard = (np.indices(img_shape).sum(axis=0) % 2).astype(np.float32)
+#qq = itk.transformix_filter(checkerboard, parameters)
+#t1 = time()
+#print('elapsed time transf: ', t1 - t0)
 #
-#fig, ax = plt.subplots(1, 3, figsize=(12, 4))
-#ax[0].imshow(fixed)
-#ax[1].imshow(ind_recon2_deformed)
-#ax[2].imshow(ind_recon3_deformed)
+#ims = dict(cmap='Greys_r')
+#fig, ax = plt.subplots(2, 2, figsize=(8, 8))
+#ax[0, 0].imshow(fixed, **ims)
+#ax[0, 1].imshow(moving, **ims)
+#ax[1, 0].imshow(registered, **ims)
+#ax[1, 1].imshow(qq, **ims)
 #fig.tight_layout()
 #fig.show()
+
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+# reconstruction of all the data without motion modeling as reference
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+
+proxg_sum = sigpy.prox.L1Reg(G.oshape, beta)
+
+alg02 = sigpy.app.LinearLeastSquares(sigpy.linop.Vstack(Fs),
+                                     cp.concatenate([x.ravel() for x in ds]),
+                                     G=G,
+                                     proxg=proxg_sum,
+                                     max_iter=500,
+                                     sigma=sigma_pdhg)
+recon_wo_moco = alg02.run()
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -187,63 +222,36 @@ ind_recon3 = alg03.run()
 proxg2 = sigpy.prox.L1Reg(G.oshape, beta / rho)
 
 # initialize all variables
-lam = ind_recon1.copy()
-z1 = ind_recon1.copy()
-z2 = ind_recon2.copy()
-z3 = ind_recon3.copy()
-u1 = cp.zeros_like(gt)
-u2 = cp.zeros_like(gt)
-u3 = cp.zeros_like(gt)
+lam = ind_recons[0, ...].copy()
+zs = ind_recons.copy()
+us = cp.zeros_like(zs)
 
 cost = np.zeros(num_iter)
 
-for i in range(num_iter):
+recons = cp.zeros((num_iter, *img_shape), dtype=cp.complex64)
+
+for i_outer in range(num_iter):
     ###################################################################
     # subproblem (1) - data fidelity + quadratic - update for z1 and z2
     ###################################################################
 
-    alg11 = sigpy.app.LinearLeastSquares(F1,
-                                         d1,
-                                         x=z1,
-                                         lamda=rho,
-                                         z=(S1(lam) - u1))
-    z1 = alg11.run()
-
-    alg12 = sigpy.app.LinearLeastSquares(F2,
-                                         d2,
-                                         x=z2,
-                                         lamda=rho,
-                                         z=(S2(lam) - u2))
-    z2 = alg12.run()
-
-    alg13 = sigpy.app.LinearLeastSquares(F3,
-                                         d3,
-                                         x=z3,
-                                         lamda=rho,
-                                         z=(S3(lam) - u3))
-    z3 = alg13.run()
+    for i in range(num_gates):
+        alg11 = sigpy.app.LinearLeastSquares(Fs[i],
+                                             ds[i],
+                                             x=zs[i],
+                                             lamda=rho,
+                                             z=(Ss[i](lam) - us[i, ...]))
+        zs[i, ...] = alg11.run()
 
     ###################################################################
     # subproblem (2) - optimize lamda
     ###################################################################
-    S = sigpy.linop.Vstack([S1, S2, S3])
-    y = cp.concatenate([
-        u1.ravel() + z1.ravel(),
-        u2.ravel() + z2.ravel(),
-        u3.ravel() + z3.ravel()
-    ])
+    S = sigpy.linop.Vstack(Ss)
+    y = (us + zs).ravel()
 
     # we could call LinearLeastSquares directly, but we will use call the
     # PHDG directly which allows us to store the dual variable of PDHG
     # for warm start of the following iteration
-
-    #alg2 = sigpy.app.LinearLeastSquares(S,
-    #                                    y,
-    #                                    x = lam,
-    #                                    G=G,
-    #                                    proxg=proxg2,
-    #                                    max_iter=500,
-    #                                    sigma=0.1)
 
     # run PDHG to solve subproblem (2)
     A = sigpy.linop.Vstack([S, G])
@@ -251,7 +259,7 @@ for i in range(num_iter):
         [sigpy.prox.L2Reg(y.shape, 1, y=-y),
          sigpy.prox.Conj(proxg2)])
 
-    if i == 0:
+    if i_outer == 0:
         max_eig = sigpy.app.MaxEig(A.H * A, dtype=y.dtype, max_iter=30).run()
         pdhg_u = cp.zeros(A.oshape, dtype=y.dtype)
 
@@ -269,6 +277,9 @@ for i in range(num_iter):
 
     lam = alg2.x
 
+    # save recon after each outer ADMM iteration
+    recons[i_outer, ...] = lam
+
     ###################################################################
     # update of displacement fields (motion operators) based on z1, z2
     ###################################################################
@@ -280,25 +291,23 @@ for i in range(num_iter):
     ###################################################################
 
     # update of dual variables
-    u1 = u1 + z1 - S1(lam)
-    u2 = u2 + z2 - S2(lam)
-    u3 = u3 + z3 - S3(lam)
+    for i in range(num_gates):
+        us[i] = us[i] + zs[i] - Ss[i](lam)
 
     ###################################################################
     # evaluation of cost function
     ###################################################################
 
     # evaluate the cost function
-    e1 = F1(S1(lam)) - d1
-    fid1 = float(0.5 * (e1.conj() * e1).sum().real)
-    e2 = F2(S2(lam)) - d2
-    fid2 = float(0.5 * (e2.conj() * e2).sum().real)
-    e3 = F3(S3(lam)) - d3
-    fid3 = float(0.5 * (e3.conj() * e3).sum().real)
-
     prior = float(G(lam).real.sum() + G(lam).imag.sum())
 
-    cost[i] = fid1 + fid2 + fid3 + beta * prior
+    data_fidelity = np.zeros(num_gates)
+
+    for i in range(num_gates):
+        e = Fs[i](Ss[i](lam)) - ds[i]
+        data_fidelity[i] = float(0.5 * (e.conj() * e).sum().real)
+
+    cost[i_outer] = data_fidelity.sum() + beta * prior
 
 #---------------------------------------------------------------------------
 #---------------------------------------------------------------------------
@@ -309,102 +318,78 @@ for i in range(num_iter):
 ims = dict(vmin=-0.5, vmax=0.5, cmap='gray')
 ims2 = dict(vmin=0, vmax=0.7, cmap='gray')
 
-fig, ax = plt.subplots(3, 8, figsize=(8 * 2, 3 * 2), sharex=True, sharey=True)
-ax[0, 0].imshow(cp.asnumpy(gt.real), **ims)
-ax[0, 0].set_title('gt real')
-ax[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
-ax[1, 0].set_title('gt imag')
-ax[2, 0].imshow(cp.asnumpy(cp.abs(gt)), **ims2)
-ax[2, 0].set_title('gt abs')
-
-ax[0, 1].imshow(cp.asnumpy(lam.real), **ims)
-ax[0, 1].set_title('lambda real')
-ax[1, 1].imshow(cp.asnumpy(lam.imag), **ims)
-ax[1, 1].set_title('lambda imag')
-ax[2, 1].imshow(cp.asnumpy(cp.abs(lam)), **ims2)
-ax[2, 1].set_title('lambda abs')
-
-ax[0, 2].imshow(cp.asnumpy(u1.real), **ims)
-ax[0, 2].set_title('u1 real')
-ax[1, 2].imshow(cp.asnumpy(u1.imag), **ims)
-ax[1, 2].set_title('u1 imag')
-ax[2, 2].imshow(cp.asnumpy(cp.abs(u1)), **ims2)
-ax[2, 2].set_title('u1 abs')
-
-ax[0, 3].imshow(cp.asnumpy(u2.real), **ims)
-ax[0, 3].set_title('u2 real')
-ax[1, 3].imshow(cp.asnumpy(u2.imag), **ims)
-ax[1, 3].set_title('u2 imag')
-ax[2, 3].imshow(cp.asnumpy(cp.abs(u2)), **ims2)
-ax[2, 3].set_title('u2 abs')
-
-ax[0, 4].imshow(cp.asnumpy(u3.real), **ims)
-ax[0, 4].set_title('u3 real')
-ax[1, 4].imshow(cp.asnumpy(u3.imag), **ims)
-ax[1, 4].set_title('u3 imag')
-ax[2, 4].imshow(cp.asnumpy(cp.abs(u3)), **ims2)
-ax[2, 4].set_title('u3 abs')
-
-ax[0, 5].imshow(cp.asnumpy(z1.real), **ims)
-ax[0, 5].set_title('z1 real')
-ax[1, 5].imshow(cp.asnumpy(z1.imag), **ims)
-ax[1, 5].set_title('z1 imag')
-ax[2, 5].imshow(cp.asnumpy(cp.abs(z1)), **ims2)
-ax[2, 5].set_title('z1 abs')
-
-ax[0, 6].imshow(cp.asnumpy(z2.real), **ims)
-ax[0, 6].set_title('z2 real')
-ax[1, 6].imshow(cp.asnumpy(z2.imag), **ims)
-ax[1, 6].set_title('z2 imag')
-ax[2, 6].imshow(cp.asnumpy(cp.abs(z2)), **ims2)
-ax[2, 6].set_title('z2 abs')
-
-ax[0, 7].imshow(cp.asnumpy(z3.real), **ims)
-ax[0, 7].set_title('z3 real')
-ax[1, 7].imshow(cp.asnumpy(z3.imag), **ims)
-ax[1, 7].set_title('z3 imag')
-ax[2, 7].imshow(cp.asnumpy(cp.abs(z3)), **ims2)
-ax[2, 7].set_title('z3 abs')
-
+fig, ax = plt.subplots(5, num_gates, figsize=(num_gates * 2, 5 * 2))
+for i in range(num_gates):
+    ax[0, i].imshow(cp.asnumpy(zs[i, ...].real), **ims)
+    ax[0, i].set_title(f'z{i} real')
+    ax[1, i].imshow(cp.asnumpy(zs[i, ...].imag), **ims)
+    ax[1, i].set_title(f'z{i} imag')
+    ax[2, i].imshow(cp.asnumpy(cp.abs(zs[i, ...])), **ims2)
+    ax[2, i].set_title(f'z{i} abs')
+    ax[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](lam))), **ims2)
+    ax[3, i].set_title(f'S{i} lam abs')
+    ax[4, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))), **ims2)
+    ax[4, i].set_title(f'S{i} gt abs')
 for axx in ax.ravel():
     axx.set_axis_off()
-
 fig.tight_layout()
 fig.show()
 
-fig2, ax2 = plt.subplots()
-ax2.plot(cost)
+fig2, ax2 = plt.subplots(4, num_gates, figsize=(num_gates * 2, 4 * 2))
+for i in range(num_gates):
+    ax2[0, i].imshow(cp.asnumpy(ind_recons[i, ...].real), **ims)
+    ax2[0, i].set_title(f'ind recon{i} real')
+    ax2[1, i].imshow(cp.asnumpy(ind_recons[i, ...].imag), **ims)
+    ax2[1, i].set_title(f'ind recon{i} imag')
+    ax2[2, i].imshow(cp.asnumpy(cp.abs(ind_recons[i, ...])), **ims2)
+    ax2[2, i].set_title(f'ind recon{i} abs')
+    ax2[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))), **ims2)
+    ax2[3, i].set_title(f'S{i} gt abs')
+for axx in ax2.ravel():
+    axx.set_axis_off()
 fig2.tight_layout()
 fig2.show()
 
-fig3, ax3 = plt.subplots(3,
-                         3,
-                         figsize=(3 * 2, 3 * 2),
-                         sharex=True,
-                         sharey=True)
-ax3[0, 0].imshow(cp.asnumpy(ind_recon1.real), **ims)
-ax3[0, 0].set_title('ind recon 1 real')
-ax3[1, 0].imshow(cp.asnumpy(ind_recon1.imag), **ims)
-ax3[1, 0].set_title('ind recon 1 imag')
-ax3[2, 0].imshow(cp.asnumpy(cp.abs(ind_recon1)), **ims2)
-ax3[2, 0].set_title('ind recon 1 abs')
-
-ax3[0, 1].imshow(cp.asnumpy(ind_recon2.real), **ims)
-ax3[0, 1].set_title('ind recon 2 real')
-ax3[1, 1].imshow(cp.asnumpy(ind_recon2.imag), **ims)
-ax3[1, 1].set_title('ind recon 2 imag')
-ax3[2, 1].imshow(cp.asnumpy(cp.abs(ind_recon2)), **ims2)
-ax3[2, 1].set_title('ind recon 2 abs')
-
-ax3[0, 2].imshow(cp.asnumpy(ind_recon3.real), **ims)
-ax3[0, 2].set_title('ind recon 3 real')
-ax3[1, 2].imshow(cp.asnumpy(ind_recon3.imag), **ims)
-ax3[1, 2].set_title('ind recon 3 imag')
-ax3[2, 2].imshow(cp.asnumpy(cp.abs(ind_recon3)), **ims2)
-ax3[2, 2].set_title('ind recon 3 abs')
-
+fig3, ax3 = plt.subplots(3, num_gates, figsize=(num_gates * 2, 3 * 2))
+for i in range(num_gates):
+    ax3[0, i].imshow(cp.asnumpy(zs[i, ...].real + us[i, ...].real), **ims)
+    ax3[0, i].set_title(f'z+u{i} real')
+    ax3[1, i].imshow(cp.asnumpy(zs[i, ...].imag + us[i, ...].imag), **ims)
+    ax3[1, i].set_title(f'z+u{i} imag')
+    ax3[2, i].imshow(cp.asnumpy(cp.abs(zs[i, ...] + us[i, ...])), **ims2)
+    ax3[2, i].set_title(f'z+u{i} abs')
 for axx in ax3.ravel():
     axx.set_axis_off()
-
 fig3.tight_layout()
 fig3.show()
+
+fig4, ax4 = plt.subplots(3, 3, figsize=(3 * 2, 3 * 2))
+ax4[0, 0].imshow(cp.asnumpy(gt.real), **ims)
+ax4[0, 0].set_title(f'gt real')
+ax4[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
+ax4[1, 0].set_title(f'gt imag')
+ax4[2, 0].imshow(cp.asnumpy(cp.abs(gt)), **ims2)
+ax4[2, 0].set_title(f'gt abs')
+ax4[0, 1].imshow(cp.asnumpy(recon_wo_moco.real), **ims)
+ax4[0, 1].set_title(f'wo moco real')
+ax4[1, 1].imshow(cp.asnumpy(recon_wo_moco.imag), **ims)
+ax4[1, 1].set_title(f'wo moco imag')
+ax4[2, 1].imshow(cp.asnumpy(cp.abs(recon_wo_moco)), **ims2)
+ax4[2, 1].set_title(f'wo moco abs')
+ax4[0, 2].imshow(cp.asnumpy(lam.real), **ims)
+ax4[0, 2].set_title(f'moco real')
+ax4[1, 2].imshow(cp.asnumpy(lam.imag), **ims)
+ax4[1, 2].set_title(f'moco imag')
+ax4[2, 2].imshow(cp.asnumpy(cp.abs(lam)), **ims2)
+ax4[2, 2].set_title(f'moco abs')
+for axx in ax4.ravel():
+    axx.set_axis_off()
+fig4.tight_layout()
+fig4.show()
+
+fig5, ax5 = plt.subplots()
+ax5.plot(np.arange(num_iter) + 1, cost)
+ax5.set_xlabel('outer iteration')
+ax5.set_ylabel('cost')
+fig5.tight_layout()
+fig5.show()
