@@ -48,13 +48,15 @@ np.random.seed(seed)
 
 #--------------------------------------------------------------------
 
-img_shape = (n, n)
+# setup the ground truth image - "fake" 3D image from 2D slice
+tmp = cp.flip(cp.load('2d_test_mri.npy').T, 0)
+gt = cp.array([tmp, tmp])
 
-# setup the ground truth image
-gt = cp.flip(cp.load('2d_test_mri.npy').T, 0)
 gt /= gt.max()
 gt = gt - 0.5 * 1j * gt
 gt = gt.astype(cp.complex64)
+
+img_shape = gt.shape
 
 # setup all k-space trajectories
 all_ks = golden_angle_2d_readout(n // 2, num_spokes, num_points)
@@ -67,7 +69,7 @@ np.random.shuffle(tmp)
 k_gate = []
 # list of corresponding Fourier operator per gate
 Fs = []
-# list of motion warping operatos
+# list of motion warping operators
 Ss_true = []
 # list of data
 ds_noise_free = []
@@ -77,7 +79,7 @@ for i in range(num_gates):
     k_gate.append(all_ks[i::num_gates, ...])
 
     # setup the Fourier operators
-    Fs.append(sigpy.linop.NUFFT(img_shape, k_gate[i]))
+    Fs.append(stacked_nufft_operator(img_shape, k_gate[i]))
 
     if i == 0:
         # we treat the first gate as reference (no displacement)
@@ -85,11 +87,11 @@ for i in range(num_gates):
     else:
         shift = int((n // 8) * np.random.randn(1))
         if i == 1:
-            ax = 0
-        elif i == 2:
             ax = 1
+        elif i == 2:
+            ax = 2
         else:
-            ax = np.random.randint(len(img_shape))
+            ax = np.random.randint(len(img_shape) - 1) + 1
         Ss_true.append(sigpy.linop.Circshift(img_shape, (shift, ),
                                              axes=(ax, )))
 
@@ -114,7 +116,11 @@ for i in range(num_gates):
 #--------------------------------------------------------------------
 
 # gradient operator, factor in front makes sure that |G| = 1
-G = (1 / np.sqrt(4 * len(img_shape))) * sigpy.linop.Gradient(img_shape)
+G = sigpy.linop.Gradient(img_shape)
+
+# normalize the norm of the gradient operator
+max_eig_G = sigpy.app.MaxEig(G.H * G, dtype=cp.complex64, max_iter=30).run()
+G = (1 / np.sqrt(max_eig_G)) * G
 
 # prox for TV prior
 proxg_ind = sigpy.prox.L1Reg(G.oshape, beta / num_gates)
@@ -300,17 +306,20 @@ for i_outer in range(num_iter):
 ims = dict(vmin=-0.5, vmax=0.5, cmap='gray')
 ims2 = dict(vmin=0, vmax=0.7, cmap='gray')
 
+# slice to show
+sl = img_shape[0] // 2
+
 fig, ax = plt.subplots(5, num_gates, figsize=(num_gates * 2, 5 * 2))
 for i in range(num_gates):
-    ax[0, i].imshow(cp.asnumpy(zs[i, ...].real), **ims)
+    ax[0, i].imshow(cp.asnumpy(zs[i, sl, ...].real), **ims)
     ax[0, i].set_title(f'z{i} real')
-    ax[1, i].imshow(cp.asnumpy(zs[i, ...].imag), **ims)
+    ax[1, i].imshow(cp.asnumpy(zs[i, sl, ...].imag), **ims)
     ax[1, i].set_title(f'z{i} imag')
-    ax[2, i].imshow(cp.asnumpy(cp.abs(zs[i, ...])), **ims2)
+    ax[2, i].imshow(cp.asnumpy(cp.abs(zs[i, sl, ...])), **ims2)
     ax[2, i].set_title(f'z{i} abs')
-    ax[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](lam))), **ims2)
+    ax[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](lam))[sl, ...]), **ims2)
     ax[3, i].set_title(f'S{i} lam abs')
-    ax[4, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))), **ims2)
+    ax[4, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))[sl, ...]), **ims2)
     ax[4, i].set_title(f'S{i} gt abs')
 for axx in ax.ravel():
     axx.set_axis_off()
@@ -319,13 +328,13 @@ fig.show()
 
 fig2, ax2 = plt.subplots(4, num_gates, figsize=(num_gates * 2, 4 * 2))
 for i in range(num_gates):
-    ax2[0, i].imshow(cp.asnumpy(ind_recons[i, ...].real), **ims)
+    ax2[0, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].real), **ims)
     ax2[0, i].set_title(f'ind recon{i} real')
-    ax2[1, i].imshow(cp.asnumpy(ind_recons[i, ...].imag), **ims)
+    ax2[1, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].imag), **ims)
     ax2[1, i].set_title(f'ind recon{i} imag')
-    ax2[2, i].imshow(cp.asnumpy(cp.abs(ind_recons[i, ...])), **ims2)
+    ax2[2, i].imshow(cp.asnumpy(cp.abs(ind_recons[i, sl, ...])), **ims2)
     ax2[2, i].set_title(f'ind recon{i} abs')
-    ax2[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))), **ims2)
+    ax2[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))[sl, ...]), **ims2)
     ax2[3, i].set_title(f'S{i} gt abs')
 for axx in ax2.ravel():
     axx.set_axis_off()
@@ -334,11 +343,14 @@ fig2.show()
 
 fig3, ax3 = plt.subplots(3, num_gates, figsize=(num_gates * 2, 3 * 2))
 for i in range(num_gates):
-    ax3[0, i].imshow(cp.asnumpy(zs[i, ...].real + us[i, ...].real), **ims)
+    ax3[0, i].imshow(cp.asnumpy(zs[i, sl, ...].real + us[i, sl, ...].real),
+                     **ims)
     ax3[0, i].set_title(f'z+u{i} real')
-    ax3[1, i].imshow(cp.asnumpy(zs[i, ...].imag + us[i, ...].imag), **ims)
+    ax3[1, i].imshow(cp.asnumpy(zs[i, sl, ...].imag + us[i, sl, ...].imag),
+                     **ims)
     ax3[1, i].set_title(f'z+u{i} imag')
-    ax3[2, i].imshow(cp.asnumpy(cp.abs(zs[i, ...] + us[i, ...])), **ims2)
+    ax3[2, i].imshow(cp.asnumpy(cp.abs(zs[i, sl, ...] + us[i, sl, ...])),
+                     **ims2)
     ax3[2, i].set_title(f'z+u{i} abs')
 for axx in ax3.ravel():
     axx.set_axis_off()
@@ -346,23 +358,23 @@ fig3.tight_layout()
 fig3.show()
 
 fig4, ax4 = plt.subplots(3, 3, figsize=(3 * 2, 3 * 2))
-ax4[0, 0].imshow(cp.asnumpy(gt.real), **ims)
+ax4[0, 0].imshow(cp.asnumpy(gt[sl, ...].real), **ims)
 ax4[0, 0].set_title(f'gt real')
-ax4[1, 0].imshow(cp.asnumpy(gt.imag), **ims)
+ax4[1, 0].imshow(cp.asnumpy(gt[sl, ...].imag), **ims)
 ax4[1, 0].set_title(f'gt imag')
-ax4[2, 0].imshow(cp.asnumpy(cp.abs(gt)), **ims2)
+ax4[2, 0].imshow(cp.asnumpy(cp.abs(gt[sl, ...])), **ims2)
 ax4[2, 0].set_title(f'gt abs')
-ax4[0, 1].imshow(cp.asnumpy(recon_wo_moco.real), **ims)
+ax4[0, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].real), **ims)
 ax4[0, 1].set_title(f'wo moco real')
-ax4[1, 1].imshow(cp.asnumpy(recon_wo_moco.imag), **ims)
+ax4[1, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].imag), **ims)
 ax4[1, 1].set_title(f'wo moco imag')
-ax4[2, 1].imshow(cp.asnumpy(cp.abs(recon_wo_moco)), **ims2)
+ax4[2, 1].imshow(cp.asnumpy(cp.abs(recon_wo_moco[sl, ...])), **ims2)
 ax4[2, 1].set_title(f'wo moco abs')
-ax4[0, 2].imshow(cp.asnumpy(lam.real), **ims)
+ax4[0, 2].imshow(cp.asnumpy(lam[sl, ...].real), **ims)
 ax4[0, 2].set_title(f'moco real')
-ax4[1, 2].imshow(cp.asnumpy(lam.imag), **ims)
+ax4[1, 2].imshow(cp.asnumpy(lam[sl, ...].imag), **ims)
 ax4[1, 2].set_title(f'moco imag')
-ax4[2, 2].imshow(cp.asnumpy(cp.abs(lam)), **ims2)
+ax4[2, 2].imshow(cp.asnumpy(cp.abs(lam[sl, ...])), **ims2)
 ax4[2, 2].set_title(f'moco abs')
 for axx in ax4.ravel():
     axx.set_axis_off()
