@@ -147,45 +147,6 @@ for i in range(num_gates):
 # skipped for now - simply copy the true motion warping operators
 Ss = deepcopy(Ss_true)
 
-#import itk
-#from time import time
-#
-#fixed = cp.asnumpy(cp.abs(ind_recons[0, ...]))
-#moving = cp.asnumpy(cp.abs(ind_recons[1, ...]))
-#
-#resolutions = 3
-#parameter_object = itk.ParameterObject.New()
-#parameter_map_rigid = parameter_object.GetDefaultParameterMap(
-#    'rigid', resolutions)
-#parameter_object.AddParameterMap(parameter_map_rigid)
-#
-## For the bspline default parameter map, an extra argument can be specified that define the final bspline grid spacing in physical space.
-#parameter_map_bspline = parameter_object.GetDefaultParameterMap(
-#    "bspline", resolutions, 20.0)
-#parameter_object.AddParameterMap(parameter_map_bspline)
-#
-#t0 = time()
-#registered, parameters = itk.elastix_registration_method(
-#    fixed, moving, parameter_object=parameter_object, log_to_console=False)
-#t1 = time()
-#print('elapsed time regist: ', t1 - t0)
-#
-## this is how we use the estimated transformation
-#t0 = time()
-#checkerboard = (np.indices(img_shape).sum(axis=0) % 2).astype(np.float32)
-#qq = itk.transformix_filter(checkerboard, parameters)
-#t1 = time()
-#print('elapsed time transf: ', t1 - t0)
-#
-#ims = dict(cmap='Greys_r')
-#fig, ax = plt.subplots(2, 2, figsize=(8, 8))
-#ax[0, 0].imshow(fixed, **ims)
-#ax[0, 1].imshow(moving, **ims)
-#ax[1, 0].imshow(registered, **ims)
-#ax[1, 1].imshow(qq, **ims)
-#fig.tight_layout()
-#fig.show()
-
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
 # reconstruction of all the data without motion modeling as reference
@@ -244,8 +205,12 @@ for i_outer in range(num_iter):
         # of the motion deformation operators
         v = cp.zeros_like(lam)
         for i in range(num_gates):
-            # calculate the inverse of the operator S - in case of a simple
-            # translation it is the adjoint (not true in general!)
+            ############################################################
+            # invert deformation operator here
+            ############################################################
+
+            # for "simple" circular shift, the inverse equal the adjoint
+            # !!! not true for a non-rigid deformation operator !!!
             S_inv = Ss[i].H
             v += S_inv(us[i] + zs[i])
 
