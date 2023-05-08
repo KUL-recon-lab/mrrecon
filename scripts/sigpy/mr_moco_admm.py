@@ -8,30 +8,12 @@
 
 import numpy as np
 import cupy as cp
-import cupy.typing as cpt
 import matplotlib.pyplot as plt
 
 import sigpy
 from copy import deepcopy
 
-
-def golden_angle_2d_readout(kmax: float, num_spokes: int,
-                            num_points: int) -> cpt.NDArray:
-    """2D golden angle kspace trajectory"""
-    tmp = cp.linspace(-kmax, kmax, num_points)
-    k = cp.zeros((num_spokes, num_points, 2))
-
-    ga = cp.pi / ((1 + cp.sqrt(5)) / 2)
-
-    for i in range(num_spokes):
-        phi = (i * ga) % (2 * cp.pi)
-        k[i, :, 0] = tmp * cp.cos(phi)
-        k[i, :, 1] = tmp * cp.sin(phi)
-
-    return k
-
-
-#-------------------------------------------------------------------
+from utils_moco import golden_angle_2d_readout, stacked_nufft_operator
 
 # input parameters
 
