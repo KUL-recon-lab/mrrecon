@@ -42,6 +42,9 @@ num_iter = 30
 max_num_iter_subproblem_2 = 100
 sigma_pdhg = 1.
 
+# bool whether to solve the original or approximated subproblem (2)
+use_subproblem2_approx = True
+
 # random seed
 seed = 1
 np.random.seed(seed)
@@ -49,7 +52,7 @@ np.random.seed(seed)
 #--------------------------------------------------------------------
 
 # setup the ground truth image - "fake" 3D image from 2D slice
-gt = cp.load('3d_test_mri.npz')['image'][83:91, ...]
+gt = cp.load('3d_test_mri.npz')['image'][86:88, ...]
 
 gt /= gt.max()
 gt = gt - 0.5 * 1j * gt
@@ -207,6 +210,8 @@ recon_wo_moco = alg02.run()
 
 # prox for subproblem 2 - note extra (1/rho) which is needed for subproblem 2
 proxg2 = sigpy.prox.L1Reg(G.oshape, beta / rho)
+# prox for subproblem 2 - note extra (1/rho) which is needed for the approximate subproblem 2
+proxg2a = sigpy.prox.L1Reg(G.oshape, beta / (num_gates * rho))
 
 # initialize all variables
 lam = ind_recons[0, ...].copy()
@@ -231,38 +236,74 @@ for i_outer in range(num_iter):
         zs[i, ...] = alg11.run()
 
     ###################################################################
-    # subproblem (2) - optimize lamda
+    # subproblem (2) - optimize lambda
     ###################################################################
-    S = sigpy.linop.Vstack(Ss)
-    y = (us + zs).ravel()
 
-    # we could call LinearLeastSquares directly, but we will use call the
-    # PHDG directly which allows us to store the dual variable of PDHG
-    # for warm start of the following iteration
+    if use_subproblem2_approx:
+        # optimize approximation of subproblem (2) using the inverse
+        # of the motion deformation operators
+        v = cp.zeros_like(lam)
+        for i in range(num_gates):
+            # calculate the inverse of the operator S - in case of a simple
+            # translation it is the adjoint (not true in general!)
+            S_inv = Ss[i].H
+            v += S_inv(us[i] + zs[i])
 
-    # run PDHG to solve subproblem (2)
-    A = sigpy.linop.Vstack([S, G])
-    proxfc = sigpy.prox.Stack(
-        [sigpy.prox.L2Reg(y.shape, 1, y=-y),
-         sigpy.prox.Conj(proxg2)])
+        v /= num_gates
 
-    if i_outer == 0:
-        max_eig = sigpy.app.MaxEig(A.H * A, dtype=y.dtype, max_iter=30).run()
-        pdhg_u = cp.zeros(A.oshape, dtype=y.dtype)
+        if i_outer == 0:
+            pdhg_u2a = cp.zeros(G.oshape, dtype=lam.dtype)
 
-    alg2 = sigpy.alg.PrimalDualHybridGradient(proxfc=proxfc,
-                                              proxg=sigpy.prox.NoOp(A.ishape),
-                                              A=A,
-                                              AH=A.H,
-                                              x=deepcopy(lam),
-                                              u=pdhg_u,
-                                              tau=1 / (max_eig * sigma_pdhg),
-                                              sigma=sigma_pdhg)
+        alg2a = sigpy.alg.PrimalDualHybridGradient(
+            proxfc=sigpy.prox.Conj(proxg2a),
+            proxg=sigpy.prox.L2Reg(img_shape, 1, y=v),
+            A=G,
+            AH=G.H,
+            x=deepcopy(lam),
+            u=pdhg_u2a,
+            tau=1 / sigma_pdhg,
+            sigma=sigma_pdhg)
 
-    for _ in range(max_num_iter_subproblem_2):
-        alg2.update()
+        for _ in range(max_num_iter_subproblem_2):
+            alg2a.update()
 
-    lam = alg2.x
+        lam = alg2a.x
+    else:
+        # optimize the exact subproblem (2) which requires knowledge of the
+        # adjoint of the motion deformation operators
+
+        S = sigpy.linop.Vstack(Ss)
+        y = (us + zs).ravel()
+
+        # we could call LinearLeastSquares directly, but we will use call the
+        # PHDG directly which allows us to store the dual variable of PDHG
+        # for warm start of the following iteration
+
+        # run PDHG to solve subproblem (2)
+        A = sigpy.linop.Vstack([S, G])
+        proxfc = sigpy.prox.Stack(
+            [sigpy.prox.L2Reg(y.shape, 1, y=-y),
+             sigpy.prox.Conj(proxg2)])
+
+        if i_outer == 0:
+            max_eig = sigpy.app.MaxEig(A.H * A, dtype=y.dtype,
+                                       max_iter=30).run()
+            pdhg_u = cp.zeros(A.oshape, dtype=y.dtype)
+
+        alg2 = sigpy.alg.PrimalDualHybridGradient(
+            proxfc=proxfc,
+            proxg=sigpy.prox.NoOp(A.ishape),
+            A=A,
+            AH=A.H,
+            x=deepcopy(lam),
+            u=pdhg_u,
+            tau=1 / (max_eig * sigma_pdhg),
+            sigma=sigma_pdhg)
+
+        for _ in range(max_num_iter_subproblem_2):
+            alg2.update()
+
+        lam = alg2.x
 
     # save recon after each outer ADMM iteration
     recons[i_outer, ...] = lam
