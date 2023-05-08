@@ -49,8 +49,7 @@ np.random.seed(seed)
 #--------------------------------------------------------------------
 
 # setup the ground truth image - "fake" 3D image from 2D slice
-tmp = cp.flip(cp.load('2d_test_mri.npy').T, 0)
-gt = cp.array([tmp, tmp])
+gt = cp.load('3d_test_mri.npz')['image'][83:91, ...]
 
 gt /= gt.max()
 gt = gt - 0.5 * 1j * gt
