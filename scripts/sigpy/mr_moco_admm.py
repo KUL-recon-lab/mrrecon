@@ -31,9 +31,9 @@ noise_level = 1e-2
 # rho parameter of ADMM
 rho = 1e-1
 # weight of TV prior for images
-beta = 3e-2
+beta = 1e-2
 # number of ADMM iterations
-num_iter = 10
+num_iter = 30
 
 # number of PDHG iterations for ADMM subproblem (2)
 max_num_iter_subproblem_2 = 100
