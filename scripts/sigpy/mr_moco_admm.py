@@ -20,13 +20,10 @@ from utils_moco import golden_angle_2d_readout, stacked_nufft_operator
 # number of gates
 num_gates = 6
 
-# image size
-n = 256  # has to be 256
-
-# total number of k-space spokes distributed over 3 gates
-num_spokes = n // 5
+# total number of k-space spokes distributed over the gates
+num_spokes = 50
 # number of k-space points per spoke
-num_points = 4 * n
+num_points = 128
 
 # noise level of data
 noise_level = 1e-2
@@ -34,9 +31,9 @@ noise_level = 1e-2
 # rho parameter of ADMM
 rho = 1e-1
 # weight of TV prior for images
-beta = 1e-3
+beta = 3e-2
 # number of ADMM iterations
-num_iter = 30
+num_iter = 10
 
 # number of PDHG iterations for ADMM subproblem (2)
 max_num_iter_subproblem_2 = 100
@@ -52,16 +49,21 @@ np.random.seed(seed)
 #--------------------------------------------------------------------
 
 # setup the ground truth image - "fake" 3D image from 2D slice
-gt = cp.load('3d_test_mri.npz')['image'][86:88, ...]
+gt = cp.load('3d_test_mri.npz')['image']
 
 gt /= gt.max()
 gt = gt - 0.5 * 1j * gt
 gt = gt.astype(cp.complex64)
 
-img_shape = gt.shape
+sim_img_shape = gt.shape
+
+# setup the image shape for reconstruction
+# for convenience, we use exactly half of the simulation shape
+# to be able to downscale the circ shift operators
+img_shape = tuple([x // 2 for x in sim_img_shape])
 
 # setup all k-space trajectories
-all_ks = golden_angle_2d_readout(n // 2, num_spokes, num_points)
+all_ks = golden_angle_2d_readout(img_shape[0] // 2, num_spokes, num_points)
 
 # distribute the k-space trajectories to the different gates
 tmp = np.arange(num_spokes)
@@ -69,10 +71,14 @@ np.random.shuffle(tmp)
 
 # a list for the kspace coordinates per gates (can have different size per gate)
 k_gate = []
-# list of corresponding Fourier operator per gate
+# list of corresponding Fourier operator per gate for simulation
+Fs_sim = []
+# list of corresponding Fourier operator per gate for reconstruction
 Fs = []
-# list of motion warping operators
+# list of motion warping operators acting on highres sim grid
 Ss_true = []
+# list of motion warping operators acting on lowres recon grid
+Ss_true_downsampled = []
 # list of data
 ds_noise_free = []
 ds = []
@@ -80,22 +86,52 @@ ds = []
 for i in range(num_gates):
     k_gate.append(all_ks[i::num_gates, ...])
 
-    # setup the Fourier operators
-    Fs.append(stacked_nufft_operator(img_shape, k_gate[i]))
+    # setup the Fourier operators for the data simulation (acting on a finer grid)
+    Fs_sim.append(stacked_nufft_operator(sim_img_shape, k_gate[i]))
 
     if i == 0:
         # we treat the first gate as reference (no displacement)
-        Ss_true.append(sigpy.linop.Identity(img_shape))
+        Ss_true.append(sigpy.linop.Identity(sim_img_shape))
+        Ss_true_downsampled.append(sigpy.linop.Identity(img_shape))
     else:
-        shift = int((n // 8) * np.random.randn(1))
+        shift = 2 * int((sim_img_shape[-1] // 16) * np.random.randn(1))
         if i == 1:
             ax = 1
         elif i == 2:
             ax = 2
         else:
-            ax = np.random.randint(len(img_shape) - 1) + 1
-        Ss_true.append(sigpy.linop.Circshift(img_shape, (shift, ),
-                                             axes=(ax, )))
+            ax = np.random.randint(len(sim_img_shape) - 1) + 1
+        Ss_true.append(
+            sigpy.linop.Circshift(sim_img_shape, (shift, ), axes=(ax, )))
+        Ss_true_downsampled.append(
+            sigpy.linop.Circshift(img_shape, (shift // 2, ), axes=(ax, )))
+
+# normalize the Fourier operators such that |F_k| = 1
+max_eig_Fsim = sigpy.app.MaxEig(Fs_sim[0].H * Fs_sim[0],
+                                dtype=cp.complex64,
+                                max_iter=30).run()
+
+for i in range(num_gates):
+    Fs_sim[i] = (1 / np.sqrt(max_eig_Fsim)) * Fs_sim[i]
+
+# simulate the data
+for i in range(num_gates):
+    ds_noise_free.append((Fs_sim[i] * Ss_true[i])(gt))
+    ds.append(ds_noise_free[i] + noise_level *
+              (cp.random.randn(*ds_noise_free[i].shape) +
+               1j * cp.random.randn(*ds_noise_free[i].shape)))
+
+# crop the data around the center along the FFT axis
+start = sim_img_shape[0] // 2 - img_shape[0] // 2
+end = start + img_shape[0]
+
+for i in range(num_gates):
+    ds_noise_free[i] = ds_noise_free[i][start:end, ...]
+    ds[i] = ds[i][start:end, ...]
+
+for i in range(num_gates):
+    # setup the Fourier operators for the reconstruction (acting on a coarser grid)
+    Fs.append(stacked_nufft_operator(img_shape, k_gate[i]))
 
 # normalize the Fourier operators such that |F_k| = 1
 max_eig_F = sigpy.app.MaxEig(Fs[0].H * Fs[0], dtype=cp.complex64,
@@ -103,13 +139,6 @@ max_eig_F = sigpy.app.MaxEig(Fs[0].H * Fs[0], dtype=cp.complex64,
 
 for i in range(num_gates):
     Fs[i] = (1 / np.sqrt(max_eig_F)) * Fs[i]
-
-# simulate the data
-for i in range(num_gates):
-    ds_noise_free.append((Fs[i] * Ss_true[i])(gt))
-    ds.append(ds_noise_free[i] + noise_level *
-              (cp.random.randn(*ds_noise_free[i].shape) +
-               1j * cp.random.randn(*ds_noise_free[i].shape)))
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -134,7 +163,7 @@ for i in range(num_gates):
                                          ds[i],
                                          G=G,
                                          proxg=proxg_ind,
-                                         max_iter=500,
+                                         max_iter=100,
                                          sigma=sigma_pdhg)
     ind_recons[i, ...] = alg01.run()
 
@@ -145,7 +174,7 @@ for i in range(num_gates):
 #--------------------------------------------------------------------
 
 # skipped for now - simply copy the true motion warping operators
-Ss = deepcopy(Ss_true)
+Ss = deepcopy(Ss_true_downsampled)
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -155,13 +184,13 @@ Ss = deepcopy(Ss_true)
 
 proxg_sum = sigpy.prox.L1Reg(G.oshape, beta)
 
-alg02 = sigpy.app.LinearLeastSquares(sigpy.linop.Vstack(Fs),
-                                     cp.concatenate([x.ravel() for x in ds]),
-                                     G=G,
-                                     proxg=proxg_sum,
-                                     max_iter=500,
-                                     sigma=sigma_pdhg)
-recon_wo_moco = alg02.run()
+alg0 = sigpy.app.LinearLeastSquares(sigpy.linop.Vstack(Fs),
+                                    cp.concatenate([x.ravel() for x in ds]),
+                                    G=G,
+                                    proxg=proxg_sum,
+                                    max_iter=500,
+                                    sigma=sigma_pdhg)
+recon_wo_moco = alg0.run()
 
 #--------------------------------------------------------------------
 #--------------------------------------------------------------------
@@ -311,20 +340,24 @@ for i_outer in range(num_iter):
 ims = dict(vmin=-0.5, vmax=0.5, cmap='gray')
 ims2 = dict(vmin=0, vmax=0.7, cmap='gray')
 
+# normalization factor that is due to the different grid sizes in simulation and recon
+# (sqrt(2)**3, for a factor a 2 downsampling in all 3 directions)
+norm = np.sqrt(8)
+
 # slice to show
 sl = img_shape[0] // 2
 
 fig, ax = plt.subplots(5, num_gates, figsize=(num_gates * 2, 5 * 2))
 for i in range(num_gates):
-    ax[0, i].imshow(cp.asnumpy(zs[i, sl, ...].real), **ims)
+    ax[0, i].imshow(cp.asnumpy(zs[i, sl, ...].real) / norm, **ims)
     ax[0, i].set_title(f'z{i} real')
-    ax[1, i].imshow(cp.asnumpy(zs[i, sl, ...].imag), **ims)
+    ax[1, i].imshow(cp.asnumpy(zs[i, sl, ...].imag) / norm, **ims)
     ax[1, i].set_title(f'z{i} imag')
-    ax[2, i].imshow(cp.asnumpy(cp.abs(zs[i, sl, ...])), **ims2)
+    ax[2, i].imshow(cp.asnumpy(cp.abs(zs[i, sl, ...])) / norm, **ims2)
     ax[2, i].set_title(f'z{i} abs')
-    ax[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](lam))[sl, ...]), **ims2)
+    ax[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](lam))[sl, ...]) / norm, **ims2)
     ax[3, i].set_title(f'S{i} lam abs')
-    ax[4, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))[sl, ...]), **ims2)
+    ax[4, i].imshow(cp.asnumpy(cp.abs(Ss_true[i](gt))[sl * 2, ...]), **ims2)
     ax[4, i].set_title(f'S{i} gt abs')
 for axx in ax.ravel():
     axx.set_axis_off()
@@ -333,13 +366,13 @@ fig.show()
 
 fig2, ax2 = plt.subplots(4, num_gates, figsize=(num_gates * 2, 4 * 2))
 for i in range(num_gates):
-    ax2[0, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].real), **ims)
+    ax2[0, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].real) / norm, **ims)
     ax2[0, i].set_title(f'ind recon{i} real')
-    ax2[1, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].imag), **ims)
+    ax2[1, i].imshow(cp.asnumpy(ind_recons[i, sl, ...].imag) / norm, **ims)
     ax2[1, i].set_title(f'ind recon{i} imag')
-    ax2[2, i].imshow(cp.asnumpy(cp.abs(ind_recons[i, sl, ...])), **ims2)
+    ax2[2, i].imshow(cp.asnumpy(cp.abs(ind_recons[i, sl, ...])) / norm, **ims2)
     ax2[2, i].set_title(f'ind recon{i} abs')
-    ax2[3, i].imshow(cp.asnumpy(cp.abs(Ss[i](gt))[sl, ...]), **ims2)
+    ax2[3, i].imshow(cp.asnumpy(cp.abs(Ss_true[i](gt))[sl * 2, ...]), **ims2)
     ax2[3, i].set_title(f'S{i} gt abs')
 for axx in ax2.ravel():
     axx.set_axis_off()
@@ -348,14 +381,14 @@ fig2.show()
 
 fig3, ax3 = plt.subplots(3, num_gates, figsize=(num_gates * 2, 3 * 2))
 for i in range(num_gates):
-    ax3[0, i].imshow(cp.asnumpy(zs[i, sl, ...].real + us[i, sl, ...].real),
-                     **ims)
+    ax3[0, i].imshow(
+        cp.asnumpy(zs[i, sl, ...].real + us[i, sl, ...].real) / norm, **ims)
     ax3[0, i].set_title(f'z+u{i} real')
-    ax3[1, i].imshow(cp.asnumpy(zs[i, sl, ...].imag + us[i, sl, ...].imag),
-                     **ims)
+    ax3[1, i].imshow(
+        cp.asnumpy(zs[i, sl, ...].imag + us[i, sl, ...].imag) / norm, **ims)
     ax3[1, i].set_title(f'z+u{i} imag')
-    ax3[2, i].imshow(cp.asnumpy(cp.abs(zs[i, sl, ...] + us[i, sl, ...])),
-                     **ims2)
+    ax3[2, i].imshow(
+        cp.asnumpy(cp.abs(zs[i, sl, ...] + us[i, sl, ...])) / norm, **ims2)
     ax3[2, i].set_title(f'z+u{i} abs')
 for axx in ax3.ravel():
     axx.set_axis_off()
@@ -363,23 +396,23 @@ fig3.tight_layout()
 fig3.show()
 
 fig4, ax4 = plt.subplots(3, 3, figsize=(3 * 2, 3 * 2))
-ax4[0, 0].imshow(cp.asnumpy(gt[sl, ...].real), **ims)
+ax4[0, 0].imshow(cp.asnumpy(gt[sl * 2, ...].real), **ims)
 ax4[0, 0].set_title(f'gt real')
-ax4[1, 0].imshow(cp.asnumpy(gt[sl, ...].imag), **ims)
+ax4[1, 0].imshow(cp.asnumpy(gt[sl * 2, ...].imag), **ims)
 ax4[1, 0].set_title(f'gt imag')
-ax4[2, 0].imshow(cp.asnumpy(cp.abs(gt[sl, ...])), **ims2)
+ax4[2, 0].imshow(cp.asnumpy(cp.abs(gt[sl * 2, ...])), **ims2)
 ax4[2, 0].set_title(f'gt abs')
-ax4[0, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].real), **ims)
+ax4[0, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].real) / norm, **ims)
 ax4[0, 1].set_title(f'wo moco real')
-ax4[1, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].imag), **ims)
+ax4[1, 1].imshow(cp.asnumpy(recon_wo_moco[sl, ...].imag) / norm, **ims)
 ax4[1, 1].set_title(f'wo moco imag')
-ax4[2, 1].imshow(cp.asnumpy(cp.abs(recon_wo_moco[sl, ...])), **ims2)
+ax4[2, 1].imshow(cp.asnumpy(cp.abs(recon_wo_moco[sl, ...])) / norm, **ims2)
 ax4[2, 1].set_title(f'wo moco abs')
-ax4[0, 2].imshow(cp.asnumpy(lam[sl, ...].real), **ims)
+ax4[0, 2].imshow(cp.asnumpy(lam[sl, ...].real) / norm, **ims)
 ax4[0, 2].set_title(f'moco real')
-ax4[1, 2].imshow(cp.asnumpy(lam[sl, ...].imag), **ims)
+ax4[1, 2].imshow(cp.asnumpy(lam[sl, ...].imag) / norm, **ims)
 ax4[1, 2].set_title(f'moco imag')
-ax4[2, 2].imshow(cp.asnumpy(cp.abs(lam[sl, ...])), **ims2)
+ax4[2, 2].imshow(cp.asnumpy(cp.abs(lam[sl, ...])) / norm, **ims2)
 ax4[2, 2].set_title(f'moco abs')
 for axx in ax4.ravel():
     axx.set_axis_off()
