@@ -224,29 +224,37 @@ if __name__ == "__main__":
     jac = sitk.DisplacementFieldJacobianDeterminantFilter().Execute(
         tx.GetDisplacementField())
 
-# show results
-ims = dict(vmin=0, vmax=1.1)
-fig, ax = plt.subplots(2, 4, figsize=(16, 8))
-ax[0, 0].imshow(sitk.GetArrayFromImage(fixed), **ims)
-ax[0, 1].imshow(sitk.GetArrayFromImage(moving), **ims)
-ax[0, 2].imshow(sitk.GetArrayFromImage(moving_resampled), **ims)
-ax[0, 3].imshow(sitk.GetArrayFromImage(tmp1), **ims)
-ax[1, 0].imshow(sitk.GetArrayFromImage(grid))
-ax[1, 1].imshow(sitk.GetArrayFromImage(grid_resampled))
-ax[1, 2].imshow(sitk.GetArrayFromImage(tmp2))
-ax[1, 3].imshow(sitk.GetArrayFromImage(jac))
+    print(f'sum of moving           : {sitk.GetArrayFromImage(moving).sum()}')
+    print(
+        f'sum of moving resampled : {sitk.GetArrayFromImage(moving_resampled).sum()}'
+    )
+    print(
+        f'sum of moving res * Jac : {(sitk.GetArrayFromImage(moving_resampled)*sitk.GetArrayViewFromImage(jac)).sum()}'
+    )
 
-for axx in ax.ravel():
-    axx.set_axis_off()
+    # show results
+    ims = dict(vmin=0, vmax=1.1)
+    fig, ax = plt.subplots(2, 4, figsize=(16, 8))
+    ax[0, 0].imshow(sitk.GetArrayFromImage(fixed), **ims)
+    ax[0, 1].imshow(sitk.GetArrayFromImage(moving), **ims)
+    ax[0, 2].imshow(sitk.GetArrayFromImage(moving_resampled), **ims)
+    ax[0, 3].imshow(sitk.GetArrayFromImage(tmp1), **ims)
+    ax[1, 0].imshow(sitk.GetArrayFromImage(grid))
+    ax[1, 1].imshow(sitk.GetArrayFromImage(grid_resampled))
+    ax[1, 2].imshow(sitk.GetArrayFromImage(tmp2))
+    ax[1, 3].imshow(sitk.GetArrayFromImage(jac))
 
-ax[0, 0].set_title('fixed')
-ax[0, 1].set_title('moving')
-ax[0, 2].set_title('S(moving)')
-ax[0, 3].set_title('S_inv(S(moving))')
-ax[1, 0].set_title('grid')
-ax[1, 1].set_title('S(grid)')
-ax[1, 2].set_title('S_inv(S(grid))')
-ax[1, 3].set_title('S(Jacobian)')
+    for axx in ax.ravel():
+        axx.set_axis_off()
 
-fig.tight_layout()
-fig.show()
+    ax[0, 0].set_title('fixed')
+    ax[0, 1].set_title('moving')
+    ax[0, 2].set_title('S(moving)')
+    ax[0, 3].set_title('S_inv(S(moving))')
+    ax[1, 0].set_title('grid')
+    ax[1, 1].set_title('S(grid)')
+    ax[1, 2].set_title('S_inv(S(grid))')
+    ax[1, 3].set_title('S(Jacobian)')
+
+    fig.tight_layout()
+    fig.show()
